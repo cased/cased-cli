@@ -16,9 +16,14 @@ limitations under the License.
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/url"
 	"os"
+	"strconv"
 
+	"github.com/cased/cased-cli/cased"
 	sshclient "github.com/helloyi/go-sshclient"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -26,23 +31,158 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
+// type Prompt struct {
+// 	Hostname    string `json:"hostname"`
+// 	Port        string `json:"port"`
+// 	Username    string `json:"username"`
+// 	IpAddress   string `json:"ip_address"`
+// 	Name        string `json:"name"`
+// 	Description string `json:"description"`
+//   "jump_command": null,
+//   "shell_command": null,
+//   "pre_download_command": null,
+//   "kind": null,
+//   "provider": null,
+//   "labels": {
+//     "network": "localhost",
+//     "app": "heroku"
+//   },
+//   "annotations": {},
+//   "principals": [],
+//   "featured": true,
+//   "prompt_for_key": false,
+//   "prompt_for_username": false,
+//   "proxy_jump_selector": {},
+//   "close_terminal_on_exit": true
+// }
+
+type Prompt struct {
+	Name        string
+	Description string
+}
+
 // promptsCmd represents the prompts command
 var promptsCmd = &cobra.Command{
 	Use:   "prompts",
 	Short: "List available prompts",
 	Long:  `List available prompts`,
 	Run: func(cmd *cobra.Command, args []string) {
-		prompt := promptui.Select{
-			Label: "Select prompt:",
-			Items: []string{"bastion-one", "rails console", "bastion-two", "heroku-app"},
+
+		response, _, err := cased.GET("/api/prompts", nil)
+		if err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(1)
 		}
 
-		_, result, err := prompt.Run()
+		err = ioutil.WriteFile("prompts.txt", []byte(response), 0)
+
+		var data map[string]interface{}
+		json.Unmarshal([]byte(response), &data)
+
+		prompts_map := make(map[int]map[string]interface{})
+
+		available_prompts := make([]Prompt, 0)
+
+		// Populate prompts map, where key is the index of selected prompt in\
+		// the UI list, and value is a dictionary with prompt data fields:
+		//    description, hostname, etc...
+		// Also create a slice of Prompt objects to populate UI (available_prompts)
+		for i, v := range data["data"].([]interface{}) {
+			// data["data"] is an array of json objects (Prompt data)
+			// The way go decodes dictionaries is to map[string]interface{}
+			prom := v.(map[string]interface{})
+			var description string = "None"
+
+			if prom["description"] != nil {
+				description = prom["description"].(string)
+			}
+
+			// Map selection index in UI to the prompt dict.
+			prompts_map[i] = prom
+
+			// Populate prompt's list.
+			available_prompts = append(available_prompts, Prompt{
+				Name:        prom["name"].(string),
+				Description: description,
+			})
+		}
+
+		// A template to display prompts.
+		templates := &promptui.SelectTemplates{
+			Label:    "{{ . }}?",
+			Active:   "\U0001F336 {{ .Name | cyan }}",
+			Inactive: "  {{ .Name | cyan }}",
+			Selected: "\U0001F336 {{ .Name | red | cyan }}",
+			Details: `
+	--------- Prompt ----------
+	{{ "Name:" | faint }}	{{ .Name }}
+	{{ "Description:" | faint }}	{{ .Description }}`,
+		}
+
+		prompt := promptui.Select{
+			Label:     "Select prompt:",
+			Items:     available_prompts,
+			Size:      len(available_prompts),
+			Templates: templates,
+		}
+
+		idx, result, err := prompt.Run()
 
 		if err != nil {
 			fmt.Printf("Prompt failed %v\n", err)
 			return
 		}
+
+		// Build POST params
+		target_prompt := prompts_map[idx]
+		params := url.Values{}
+		for key := range target_prompt {
+			switch target_prompt[key].(type) {
+			case string:
+				params.Add(key, target_prompt[key].(string))
+			case int:
+				params.Add(key, strconv.Itoa(target_prompt[key].(int)))
+			case bool:
+				v := target_prompt[key].(bool)
+				if v {
+					params.Add(key, "True")
+				} else {
+					params.Add(key, "False")
+				}
+			case map[string]interface{}:
+				jstr, err := json.Marshal(target_prompt[key])
+				if err == nil {
+					params.Add(key, string(jstr))
+				}
+			case []interface{}:
+				params.Add(key, fmt.Sprintf("%s", target_prompt[key]))
+			case nil:
+				params.Add(key, "")
+			default:
+				fmt.Fprintf(os.Stderr, "[*] ERROR: Unknown key type: key=(%s), type=%T\n", key, target_prompt[key])
+				fmt.Fprintf(os.Stderr, "When creating prompt")
+			}
+		}
+
+		response, _, err = cased.POST("/", params)
+		if err == nil {
+			ioutil.WriteFile("post.txt", []byte(response), 0660)
+		} else {
+			fmt.Fprintf(os.Stderr, "[*] Failed to connect to prompt.")
+			os.Exit(1)
+		}
+
+		var resp_map map[string]interface{}
+		json.Unmarshal([]byte(response), &resp_map)
+		// for k := range resp_map {
+		// 	fmt.Printf("key: %s, value=%v, type=%T\n", k, resp_map[k], resp_map[k])
+		// }
+
+		id := resp_map["id"].(string)
+
+		cased.Websocket(id)
+
+		os.Exit(0)
 
 		fmt.Printf("Connecting to %s\n...", result)
 

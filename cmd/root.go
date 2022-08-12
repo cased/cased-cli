@@ -26,6 +26,7 @@ import (
 )
 
 var cfgFile string
+var casedShellHost string
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -49,10 +50,22 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 
+	cased_cfg := map[string]string{
+		"casedhost":  "CASED_SHELL_HOSTNAME",
+		"casedtoken": "CASED_TOKEN",
+	}
+
+	for key, val := range cased_cfg {
+		viper.BindEnv(key, val)
+		if viper.GetString(key) == "" {
+			os.Stderr.WriteString(val + " env must be set!\n")
+			os.Exit(1)
+		}
+	}
+
 	// Here you will define your flags and configuration settings.
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
-
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.cli.yaml)")
 
 	// Cobra also supports local flags, which will only run

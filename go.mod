@@ -3,6 +3,7 @@ module github.com/cased/cased-cli
 go 1.16
 
 require (
+	github.com/gorilla/websocket v1.5.0
 	github.com/helloyi/go-sshclient v1.1.0
 	github.com/manifoldco/promptui v0.9.0
 	github.com/mitchellh/go-homedir v1.1.0
