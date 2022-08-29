@@ -14,12 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+package cased
 
-import "cased-cli/cased"
+type App interface {
+	Start()
+}
 
-func main() {
-	app := cased.NewApp()
-	// app := cased.NewApp()
-	app.Start()
+func NewApp() App {
+	return &SSHApp{}
 }
