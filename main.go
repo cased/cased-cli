@@ -19,7 +19,6 @@ package main
 import "cased-cli/cased"
 
 func main() {
-	app := cased.NewApp()
-	// app := cased.NewApp()
+	app := cased.NewSSHApp()
 	app.Start()
 }

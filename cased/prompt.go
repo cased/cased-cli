@@ -3,7 +3,6 @@ package cased
 import (
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"net/http"
 	"os"
 
@@ -83,8 +82,6 @@ func ConnectToPrompt(p *Prompt) tea.Msg {
 		return ErrMsg{err}
 	}
 
-	ioutil.WriteFile("post.txt", []byte(response), 0660)
-
 	var resp_map map[string]interface{}
 	json.Unmarshal([]byte(response), &resp_map)
 	if id, ok := resp_map["id"]; ok && id != nil {
@@ -114,54 +111,4 @@ func openWebSocketConnection(id string) tea.Msg {
 	}
 
 	return PromptConnectedMsg{c}
-
-	/*defer c.Close()
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			_, message, err := c.ReadMessage()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "read error:", err)
-				return
-			}
-			fmt.Print(string(message))
-		}
-	}()
-
-	ch := make(chan string)
-	go func(ch chan string) {
-		// disable input buffering
-		exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1").Run()
-		// do not display entered characters on the screen
-		exec.Command("stty", "-F", "/dev/tty", "-echo").Run()
-		var b []byte = make([]byte, 1)
-		for {
-			os.Stdin.Read(b)
-			ch <- string(b)
-		}
-	}(ch)
-
-	defer func() {
-		exec.Command("stty", "-F", "/dev/tty", "echo").Run()
-	}()
-
-	for {
-		select {
-		case <-done:
-			return nil
-		case input, _ := <-ch:
-			if input == "\n" {
-				input = "\\r"
-			}
-			err := c.WriteMessage(websocket.TextMessage, []byte(`{"data": "`+input+`"}`))
-			if err != nil {
-				return err
-			}
-		default:
-			time.Sleep(time.Microsecond)
-		}
-	}*/
 }
