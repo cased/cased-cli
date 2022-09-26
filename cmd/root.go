@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,15 +26,14 @@ import (
 )
 
 var cfgFile string
+var version = "0.0.1"
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "cli",
-	Short: "Cased CLI",
-	Long:  `Cased CLI`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	//	Run: func(cmd *cobra.Command, args []string) { },
+	Use:     "cli",
+	Short:   "Cased CLI",
+	Long:    `Cased CLI`,
+	Version: version,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
