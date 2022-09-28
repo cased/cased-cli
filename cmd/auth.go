@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/containerd/console"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 )
@@ -90,31 +91,27 @@ func login(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Println("Auth URL:", authURL)
 	openbrowser(authURL.(string))
 
-	fmt.Print("Waiting for authentication ")
+	log.Print("Waiting for authentication ")
 
 	// Poll the API for token
 	for {
 		resp, err := http.Get(pollURL.(string))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "[*] ERROR: Unable to get access token:", err)
-			os.Exit(1)
+			log.Fatal("[*] ERROR: Unable to get access token:", err)
 		}
 
 		if resp.StatusCode == 200 {
 			var data map[string]interface{}
 			err = json.NewDecoder(resp.Body).Decode(&data)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "[*] ERROR: Invalid response from cased-shell server:", err)
-				os.Exit(1)
+				log.Fatal("[*] ERROR: Invalid response from cased-shell server:", err)
 			}
 
 			tk, ok := data["token"]
 			if !ok {
-				fmt.Fprintln(os.Stderr, "[*] ERROR: Invalid response, unable to parse token")
-				os.Exit(1)
+				log.Fatal("[*] ERROR: Invalid response, unable to parse token")
 			}
 
 			token = tk.(string)
@@ -126,7 +123,9 @@ func login(cmd *cobra.Command, args []string) {
 		time.Sleep(time.Second)
 	}
 
-	fmt.Println("\nToken:", token)
+	fmt.Println()
+	log.Println("Authentication successful")
+
 	connect(casedServer, token)
 }
 
@@ -138,6 +137,9 @@ func connect(host, token string) {
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
+
+	log.Println("Connecting to cased-server...")
+
 	client, err := ssh.Dial("tcp", host, config)
 	if err != nil {
 		log.Fatal("Failed to dial: ", err)
@@ -160,8 +162,28 @@ func connect(host, token string) {
 	}
 
 	// Request pseudo terminal
-	if err := session.RequestPty("xterm", 40, 80, modes); err != nil {
-		log.Fatal("request for pseudo terminal failed: ", err)
+	term := os.Getenv("TERM")
+	if term == "" {
+		term = "xterm"
+	}
+
+	current := console.Current()
+	defer current.Reset()
+
+	w := 40
+	h := 80
+
+	if ws, err := current.Size(); err == nil {
+		w = int(ws.Width)
+		h = int(ws.Height)
+	}
+
+	if err := session.RequestPty(term, h, w, modes); err != nil {
+		log.Fatal("Request for pseudo terminal failed: ", err)
+	}
+
+	if err := current.SetRaw(); err != nil {
+		log.Fatal("Unable to set terminal mode to raw:", err)
 	}
 
 	var stdin io.WriteCloser
@@ -182,33 +204,21 @@ func connect(host, token string) {
 		log.Fatal(err.Error())
 	}
 
-	wr := make(chan []byte, 10)
-
 	go func() {
+		scanner := bufio.NewReader(stdout)
+		data := make([]byte, 1024)
 		for {
-			select {
-			case d := <-wr:
-				_, err := stdin.Write(d)
-				if err != nil {
-					fmt.Println(err.Error())
+			n, err := scanner.Read(data)
+			if err != nil {
+				msg := ""
+				if err != io.EOF {
+					msg = ": " + err.Error()
 				}
+				log.Println("SSH Session ended", msg)
+				current.Reset()
+				os.Exit(0)
 			}
-		}
-	}()
-
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for {
-			if tkn := scanner.Scan(); tkn {
-				rcv := scanner.Bytes()
-				raw := make([]byte, len(rcv))
-				copy(raw, rcv)
-				fmt.Println(string(raw))
-			} else {
-				if scanner.Err() != nil {
-					fmt.Println(scanner.Err())
-				return
-			}
+			os.Stdout.Write(data[:n])
 		}
 	}()
 
@@ -222,15 +232,16 @@ func connect(host, token string) {
 
 	session.Shell()
 
+	scanner := bufio.NewReader(os.Stdin)
+	b := make([]byte, 1)
 	for {
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		text := scanner.Text()
-
-		wr <- []byte(text + "\n")
+		c, err := scanner.ReadByte()
+		if err == io.EOF {
+			return
+		}
+		b[0] = c
+		stdin.Write(b)
 	}
-
-	fmt.Println("DONE!")
 }
 
 func openbrowser(url string) {
