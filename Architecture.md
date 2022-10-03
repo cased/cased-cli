@@ -11,8 +11,11 @@ This document describes the _cased-cli_ components along with the interaction be
 ### Notes on OAuth2 [PKCE](https://oauth.net/2/pkce/) terminology:
 
 . `code_verifier`: A cryptographically random string using the characters A-Z, a-z, 0-9, and the punctuation characters -._~ (hyphen, period, underscore, and tilde), between 43 and 128 characters long. Once the client has generated the code verifier, it uses that to create the code challenge.
+
 . `code_challenge`: A computation of `code_verifier` using `code_challenge_method`.
+
 . `code_challenge_method`: Must be either `plain` or `s256`:
+
     . `plain`: The plain method does not change the input, so the value of `code_verifier` and the resultant value of `code_challenge` are equal.
     . `S256`: The `code_challenge` is the base64 encode of the sha256 hash of `code_verifier`, i.e. `code_challenge` = `base64encode(sha256(code_verifier))`.
 
@@ -24,7 +27,7 @@ This document describes the _cased-cli_ components along with the interaction be
 4. `cased-shell` sends back a JSON with the login url to authenticate the user.
 5. `cased-cli` launches the user web browser, the web browser connects to the login URL provided by `cased-shell`.
 6. User authenticates with the IDP.
-7. If authentication is successful proceed to **7**, otherwise this process ends with an error message displayed to the user.
+7. If authentication is successful proceed to **8**, otherwise this process ends with an error message displayed to the user.
 8. `cased-shell` generates a random `authorization_code`, then it stores the session `JWT`, `code_challenge` and `code_challenge_method` in a dictionary where the key is the `authorization_code`.
 9. `cased-shell` sends back the `authorization_code` to cased-cli.
 10. `cased-cli` obtains the `authorization_code`, then it sends a POST request to `cased-shell` on `/v2/api/token`, the `code_verifier` and `authorization_code` are sent as POST arguments (x-www-form-urlencoded).
@@ -33,11 +36,11 @@ This document describes the _cased-cli_ components along with the interaction be
         . `cased-cli` sends a GET request to _cased-shell_ on the `instance.domain/v2/api/auth/` URL, the RP is sent as `rp` along with the `cc`and `cm` parameters.
         . After authenticating with the IDP, _cased-shell_ sends back [javascript code](#example-javascript-code) that creates a POST request to 127.0.0.1:(RP), and send the `authorization_code` as payload (JSON or whatever).
         . `cased-cli` parses the POST request and retrieves the `authorization_code`.
-12. `cased-shell`, retrives the JWT, `code_challenge` and `code_challenge_method` associated with the `authorization_code`. If there is no associated data an error must be returned and the process ends.
-13. `cased_shell` computes a code challenge using the the `code_verifier` provided and the `code_challenge_method` stored previously.
-14. If the code challenge just computed matches the `code_challenge` stored initially, then the verification is ok, `cased-shell` sends back the session `JWT` to `cased-cli` in the response, otherwise return an error status + message.
-15. `cased-cli` connects to `cased-server` using password authentication, where the password is the session `JWT` provided by `cased-shell`.
-16. `cased-server` validates the JWT, if validation fails the user is disconnected from `cased-server`, otherwise the connection is succesfully established.
+11. `cased-shell`, retrives the JWT, `code_challenge` and `code_challenge_method` associated with the `authorization_code`. If there is no associated data an error must be returned and the process ends.
+12. `cased_shell` computes a code challenge using the the `code_verifier` provided and the `code_challenge_method` stored previously.
+13. If the code challenge just computed matches the `code_challenge` stored initially, then the verification is ok, `cased-shell` sends back the session `JWT` to `cased-cli` in the response, otherwise return an error status + message.
+14. `cased-cli` connects to `cased-server` using password authentication, where the password is the session `JWT` provided by `cased-shell`.
+15. `cased-server` validates the JWT, if validation fails the user is disconnected from `cased-server`, otherwise the connection is succesfully established.
 
 **TODO**: If `cased-cli` fails to open a web browser to authenticate the user, another fallback solution to authentication must be provided.
 
