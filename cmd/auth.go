@@ -22,12 +22,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
 	"time"
 
 	"github.com/containerd/console"
+	"github.com/matthewhartstonge/pkce"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 )
@@ -52,6 +54,8 @@ var authCmd = &cobra.Command{
 
 func login(cmd *cobra.Command, args []string) {
 	var token string
+	var authCode string
+
 	casedServer := os.Getenv("CASED_SERVER")
 	if casedServer == "" {
 		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not found")
@@ -64,57 +68,78 @@ func login(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	loginURL := fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
-	resp, err := http.Get(loginURL)
+	// Generate a secure code verifier!
+	codeVerifier, err := pkce.GenerateCodeVerifier(96)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "[*] ERROR: fetching auth URL from cased-shell:", err)
-		os.Exit(1)
+		log.Fatalln("Unable to generate code verifier:", err)
+	}
+
+	codeChallenge, err := pkce.GenerateCodeChallenge(pkce.S256, codeVerifier)
+	if err != nil {
+		log.Fatalln("Unable to generate code challenge:", err)
+	}
+
+	loginURL := fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
+
+	req, err := http.NewRequest("GET", loginURL, nil)
+
+	loginArgs := url.Values{}
+	loginArgs.Add("cc", codeChallenge)
+	req.URL.RawQuery = loginArgs.Encode()
+
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatalln("[*] ERROR: fetching auth URL from cased-shell:", err)
 	}
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "[*] ERROR: Invalid response from cased-shell server:", err)
-		os.Exit(1)
+		log.Fatalln("[*] ERROR: Invalid response from cased-shell server:", err)
 	}
 
 	authURL, ok := data["auth_url"]
 	if !ok {
-		fmt.Fprintln(os.Stderr, "[*] ERROR: Invalid response, 'auth_url' is missing")
-		os.Exit(1)
+		log.Fatalln("[*] ERROR: Invalid response, 'auth_url' is missing")
 	}
 
 	pollURL, ok := data["poll_url"]
 	if !ok {
-		fmt.Fprintln(os.Stderr, "[*] ERROR: Invalid response, 'poll_url' is missing.")
-		os.Exit(1)
+		log.Fatalln("[*] ERROR: Invalid response, 'poll_url' is missing.")
+	}
+
+	tokenURL, ok := data["token_url"]
+	if !ok {
+		log.Fatalln("[*] ERROR: Invalid response, 'token_url' is missing.")
 	}
 
 	openbrowser(authURL.(string))
 
 	log.Print("Waiting for authentication ")
 
-	// Poll the API for token
-	for {
+	// Poll the API for authorization_code.
+	const MaxIterations = 30
+	for i := 0; i < MaxIterations; i++ {
 		resp, err := http.Get(pollURL.(string))
 		if err != nil {
-			log.Fatal("[*] ERROR: Unable to get access token:", err)
+			log.Fatal("[*] ERROR: Unable to get authorization code:", err)
 		}
 
-		if resp.StatusCode == 200 {
+		if resp.StatusCode == http.StatusOK {
 			var data map[string]interface{}
 			err = json.NewDecoder(resp.Body).Decode(&data)
 			if err != nil {
 				log.Fatal("[*] ERROR: Invalid response from cased-shell server:", err)
 			}
 
-			tk, ok := data["token"]
+			ac, ok := data["authorization_code"]
 			if !ok {
-				log.Fatal("[*] ERROR: Invalid response, unable to parse token")
+				log.Fatal("[*] ERROR: Invalid response, 'authorization_code' is missing")
 			}
 
-			token = tk.(string)
+			authCode = ac.(string)
 
 			break
 		}
@@ -122,6 +147,36 @@ func login(cmd *cobra.Command, args []string) {
 		fmt.Print(".")
 		time.Sleep(time.Second)
 	}
+
+	if authCode == "" {
+		log.Fatalln("[*] Authentication timed out, exiting...")
+	}
+
+	req, err = http.NewRequest("GET", tokenURL.(string), nil)
+
+	tokenArgs := url.Values{}
+	tokenArgs.Add("authorization_code", authCode)
+	tokenArgs.Add("cc", codeVerifier)
+	req.URL.RawQuery = tokenArgs.Encode()
+
+	respToken, err := client.Do(req)
+	if err != nil {
+		log.Fatalln("[*] ERROR: fetching token from cased-shell:", err)
+	}
+	defer respToken.Body.Close()
+
+	var tokenData map[string]interface{}
+	err = json.NewDecoder(respToken.Body).Decode(&tokenData)
+	if err != nil {
+		log.Fatalln("[*] ERROR: Fetching token, invalid response from cased-shell server:", err)
+	}
+
+	tk, ok := tokenData["token"]
+	if !ok {
+		log.Fatalln("[*] ERROR: Invalid response, 'token' is missing")
+	}
+
+	token = tk.(string)
 
 	fmt.Println()
 	log.Println("Authentication successful")
