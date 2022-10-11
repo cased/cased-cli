@@ -21,7 +21,7 @@
 
 ## Installation
 
-1. Clone cased-cli [repository] (https://github.com/cased/cased-cli):
+1. Clone cased-cli [repository](https://github.com/cased/cased-cli):
     - `git clone https://github.com/cased/cased-cli` 
 2. Build the program:  
     - `cd cased-cli`
