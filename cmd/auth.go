@@ -48,8 +48,9 @@ var authCmd = &cobra.Command{
 	Short:   "Authenticate cased-cli with the IDP",
 	Long:    `Authenticate cased-cli with the IDP `,
 	Example: "cased auth instance.domain",
-	Args:    cobra.ExactArgs(1),
-	Run:     login,
+	// auth requires exactly one positional argument, a cased-shell instance hostname
+	Args: cobra.ExactArgs(1),
+	Run:  login,
 }
 
 func login(cmd *cobra.Command, args []string) {
@@ -289,13 +290,21 @@ func connect(host, token string) {
 
 	scanner := bufio.NewReader(os.Stdin)
 	b := make([]byte, 1)
+
 	for {
 		c, err := scanner.ReadByte()
 		if err == io.EOF {
 			return
 		}
 		b[0] = c
-		stdin.Write(b)
+		if c == '/' {
+			snippet := ShowSnippets()
+			if snippet != "" {
+				stdin.Write([]byte(snippet))
+			}
+		} else {
+			stdin.Write(b)
+		}
 	}
 }
 
