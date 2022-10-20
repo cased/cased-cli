@@ -217,7 +217,6 @@ func connect(host, token string) {
 		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
 	}
 
-	// Request pseudo terminal
 	term := os.Getenv("TERM")
 	if term == "" {
 		term = "xterm"
