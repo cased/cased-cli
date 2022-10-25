@@ -18,6 +18,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/containerd/console"
@@ -36,9 +38,91 @@ import (
 
 var browserCmd *exec.Cmd
 
-const loginAPI = "v2/api/auth"
+const (
+	loginAPI            = "v2/api/auth"
+	snippetsTriggerTime = 500 * time.Millisecond
+)
+
+type stdinReader struct {
+	detached  atomic.Bool
+	stdinChan chan []byte
+	reader    *bufio.Reader
+}
+
+func (r *stdinReader) detach() {
+	r.detached.Store(true)
+	select {
+	case <-r.stdinChan:
+		r.reader.UnreadByte()
+	default:
+		return
+	}
+}
+
+func (r *stdinReader) attach() {
+	r.detached.Store(false)
+}
+
+func (r *stdinReader) isDetached() bool {
+	return r.detached.Load()
+}
+
+var sharedStdinReader stdinReader = stdinReader{
+	reader:    bufio.NewReader(os.Stdin),
+	stdinChan: make(chan []byte),
+}
+
+func (r *stdinReader) readLoop() {
+	var buffer [32]byte
+	for {
+		n, err := r.reader.Read(buffer[:])
+		if err != nil {
+			close(r.stdinChan)
+			return
+		}
+		r.stdinChan <- buffer[:n]
+	}
+}
+
+func (r *stdinReader) Read(p []byte) (n int, err error) {
+	b, ok := <-r.stdinChan
+
+	if !ok {
+		return 0, errors.New("stdin channel is closed")
+	}
+
+	copy(p, b)
+
+	return len(b), nil
+}
+
+const debugFileName = "ssh.log"
+
+var (
+	debugFile    *os.File
+	debugWritter *bufio.Writer
+	debug        func(string)
+)
+
+func debugImpl(msg string) {
+	debugWritter.WriteString(msg)
+	debugWritter.Flush()
+}
+
+func debugNull(msg string) {}
 
 func init() {
+	debug = debugNull
+
+	if len(os.Getenv("DEBUG")) > 0 {
+		var err error
+		debugFile, err = os.OpenFile(debugFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0744)
+		if err == nil {
+			debugWritter = bufio.NewWriter(debugFile)
+			debug = debugImpl
+		}
+	}
+
 	rootCmd.AddCommand(authCmd)
 }
 
@@ -273,6 +357,7 @@ func connect(host, token string) {
 				current.Reset()
 				os.Exit(0)
 			}
+			// filtered := bytes.Replace(data[:n], []byte("\x1b[?2004l"), []byte{}, -1)
 			os.Stdout.Write(data[:n])
 		}
 	}()
@@ -281,28 +366,50 @@ func connect(host, token string) {
 		scanner := bufio.NewScanner(stderr)
 
 		for scanner.Scan() {
-			fmt.Println(scanner.Text())
+			fmt.Fprint(os.Stderr, scanner.Text())
 		}
 	}()
 
 	session.Shell()
 
-	scanner := bufio.NewReader(os.Stdin)
-	b := make([]byte, 1)
+	var timer *time.Timer
+	timerIsOn := false
+
+	go sharedStdinReader.readLoop()
 
 	for {
-		c, err := scanner.ReadByte()
-		if err == io.EOF {
-			return
-		}
-		b[0] = c
-		if c == '/' {
-			snippet := ShowSnippets()
-			if snippet != "" {
-				stdin.Write([]byte(snippet))
+		if timerIsOn {
+			select {
+			case <-timer.C:
+				sharedStdinReader.detach() // give control of stdin to bubbletea
+				timerIsOn = false
+				snippet := ShowSnippetsWithReader(&sharedStdinReader)
+				sharedStdinReader.attach()
+				if snippet != "" {
+					stdin.Write([]byte(snippet))
+				}
+			case data, ok := <-sharedStdinReader.stdinChan:
+				if !ok {
+					return
+				}
+				timer.Stop()
+				timerIsOn = false
+				stdin.Write([]byte("/"))
+				stdin.Write(data)
 			}
 		} else {
-			stdin.Write(b)
+			select {
+			case data, ok := <-sharedStdinReader.stdinChan:
+				if !ok {
+					return
+				}
+				if data[0] == '/' && len(data) == 1 {
+					timerIsOn = true
+					timer = time.NewTimer(snippetsTriggerTime)
+				} else {
+					stdin.Write(data)
+				}
+			}
 		}
 	}
 }
