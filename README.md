@@ -48,6 +48,13 @@ Select the prompt you would like to connect to and press `<ENTER>`
     
 ## Contributing / Reporting issues
 
+### Creating a release
+
+```
+git tag -a v0.0.1
+git push origin v0.0.1
+```
+
 ## License
 
 [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.html)
