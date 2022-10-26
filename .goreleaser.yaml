@@ -1,0 +1,23 @@
+project_name: cased-cli
+builds:
+  - env: [CGO_ENABLED=0]
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+universal_binaries:
+- replace: true
+sboms:
+  - artifacts: archive
+nfpms:
+- maintainer: darkfronza <darkfronza@gmail.com>
+  description: An open source SSH client that brings the power of Cased to everyone's local terminal
+  homepage: https://github.com/cased/cased-cli
+  license: Apache-2.0
+  formats:
+  - deb
+  - rpm
+  - apk
+  
