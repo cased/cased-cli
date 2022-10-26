@@ -158,6 +158,7 @@ func showSnippets(cmd *cobra.Command, args []string) {
 }
 
 func showSnippetsImpl(reader io.Reader) string {
+	selectedSnippet = ""
 	term := console.Current()
 	termSize, _ := term.Size()
 

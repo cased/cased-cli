@@ -47,6 +47,7 @@ type stdinReader struct {
 	detached  atomic.Bool
 	stdinChan chan []byte
 	reader    *bufio.Reader
+	lastInput []byte
 }
 
 func (r *stdinReader) detach() {
@@ -60,7 +61,10 @@ func (r *stdinReader) detach() {
 }
 
 func (r *stdinReader) attach() {
+	// Send last input read from bubbletea back to our app
 	r.detached.Store(false)
+	r.stdinChan <- r.lastInput
+	r.lastInput = nil
 }
 
 func (r *stdinReader) isDetached() bool {
@@ -80,6 +84,14 @@ func (r *stdinReader) readLoop() {
 			close(r.stdinChan)
 			return
 		}
+		// Keep last input read from bubbletea app
+		// When we close the bubbletea app (snippets), send the last
+		// input back to our app so we don't lose it.
+		if r.detached.Load() {
+			r.lastInput = make([]byte, n)
+			copy(r.lastInput, buffer[:n])
+		}
+		// debug(fmt.Sprintf("read: got %d bytes. is_detached=%v", n, r.detached.Load()))
 		r.stdinChan <- buffer[:n]
 	}
 }
@@ -105,7 +117,7 @@ var (
 )
 
 func debugImpl(msg string) {
-	debugWritter.WriteString(msg)
+	debugWritter.WriteString(msg + "\n")
 	debugWritter.Flush()
 }
 
@@ -358,6 +370,10 @@ func connect(host, token string) {
 				os.Exit(0)
 			}
 			// filtered := bytes.Replace(data[:n], []byte("\x1b[?2004l"), []byte{}, -1)
+			// filtered = bytes.Replace(filtered, []byte("\x1b[?2004h"), []byte{}, -1)
+			// filtered = bytes.Replace(filtered, []byte("]0;"), []byte{}, -1)
+			// debug(fmt.Sprintf("STDOUT (b): [%v]", filtered))
+			// debug(fmt.Sprintf("STDOUT (s): [%v]", string(filtered)))
 			os.Stdout.Write(data[:n])
 		}
 	}()
