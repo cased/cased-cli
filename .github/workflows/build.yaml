@@ -21,7 +21,7 @@ jobs:
           cache: ${{ github.event_name == 'pull_request' }}
       - run: go mod tidy
       - run: go test -v ./...
-      - name: build release assets
+      - name: Build release assets
         uses: goreleaser/goreleaser-action@v3
         with:
           distribution: goreleaser

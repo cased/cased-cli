@@ -18,7 +18,7 @@ jobs:
           cache: false
       - run: go mod tidy
       - run: go test -v ./...
-      - name: create GitHub release
+      - name: Create GitHub release
         uses: goreleaser/goreleaser-action@v3
         with:
           distribution: goreleaser
