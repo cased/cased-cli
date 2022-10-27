@@ -282,6 +282,8 @@ func login(cmd *cobra.Command, args []string) {
 }
 
 func connect(host, token string) {
+	var connectedToPrompt atomic.Bool
+
 	config := &ssh.ClientConfig{
 		User: "cased",
 		Auth: []ssh.AuthMethod{
@@ -356,8 +358,12 @@ func connect(host, token string) {
 	}
 
 	go func() {
+		handshake := []byte{0xde, 0xad, 0xbe, 0xef}
+		disconnectedHandshake := []byte{0xef, 0xbe, 0xad, 0xde}
 		scanner := bufio.NewReader(stdout)
 		data := make([]byte, 1024)
+		hsPtr := 0 // handshake pointer to the current expected byte
+
 		for {
 			n, err := scanner.Read(data)
 			if err != nil {
@@ -368,6 +374,29 @@ func connect(host, token string) {
 				log.Println("SSH Session ended", msg)
 				current.Reset()
 				os.Exit(0)
+			}
+
+			var hsBuffer []byte
+			if !connectedToPrompt.Load() {
+				hsBuffer = handshake
+			} else {
+				hsBuffer = disconnectedHandshake
+			}
+
+			// debug(fmt.Sprintf("ssh (raw): %v", data[:n]))
+			// look for handshake (connected to or disconnected from target prompt)
+			for _, b := range data[:n] {
+				if b == hsBuffer[hsPtr] {
+					hsPtr++
+					if hsPtr == len(hsBuffer) {
+						hsPtr = 0
+						connectedToPrompt.Store(!connectedToPrompt.Load())
+						break
+					}
+				} else if hsPtr > 0 {
+					// Reset handshake pointer, mismatched data
+					hsPtr = 0
+				}
 			}
 			// filtered := bytes.Replace(data[:n], []byte("\x1b[?2004l"), []byte{}, -1)
 			// filtered = bytes.Replace(filtered, []byte("\x1b[?2004h"), []byte{}, -1)
@@ -419,7 +448,7 @@ func connect(host, token string) {
 				if !ok {
 					return
 				}
-				if data[0] == '/' && len(data) == 1 {
+				if data[0] == '/' && len(data) == 1 && connectedToPrompt.Load() {
 					timerIsOn = true
 					timer = time.NewTimer(snippetsTriggerTime)
 				} else {
