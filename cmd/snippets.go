@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -99,6 +100,16 @@ type model struct {
 }
 
 func init() {
+	// Enable debugging log if DEBUG env is not empty.
+	if len(os.Getenv("DEBUG")) > 0 {
+		logFile, err := tea.LogToFile("debug.log", "")
+		if err != nil {
+			log.Fatalln("DEBUG:", err)
+		}
+		defer logFile.Close()
+	} else {
+		log.SetOutput(ioutil.Discard)
+	}
 	rootCmd.AddCommand(snippetsCmd)
 }
 
@@ -143,23 +154,13 @@ var snippetsCmd = &cobra.Command{
 var logFile *os.File
 
 func showSnippets(cmd *cobra.Command, args []string) {
-	fmt.Println(showSnippetsImpl())
+	fmt.Println(showSnippetsImpl(nil))
 }
 
-func showSnippetsImpl() string {
+func showSnippetsImpl(reader io.Reader) string {
+	selectedSnippet = ""
 	term := console.Current()
 	termSize, _ := term.Size()
-
-	// Enable debugging log if DEBUG env is not empty.
-	if len(os.Getenv("DEBUG")) > 0 {
-		logFile, err := tea.LogToFile("debug.log", "")
-		if err != nil {
-			log.Fatalln("DEBUG:", err)
-		}
-		defer logFile.Close()
-	} else {
-		log.SetOutput(ioutil.Discard)
-	}
 
 	// Keep track of initial terminal dimensions
 	if termSize.Width > 0 {
@@ -196,17 +197,25 @@ func showSnippetsImpl() string {
 	m.snippetCategories = list.New(snippetCategories, list.NewDefaultDelegate(), 0, 0)
 	m.snippetCategories.Title = "Select a snippet category"
 
-	program := tea.NewProgram(m, tea.WithAltScreen())
+	if reader == nil {
+		reader = os.Stdin
+	}
+
+	program := tea.NewProgram(m, tea.WithInput(reader), tea.WithAltScreen())
 	if err := program.Start(); err != nil {
 		fmt.Println("Error running program:", err)
-		os.Exit(1)
+		return ""
 	}
 
 	return selectedSnippet
 }
 
 func ShowSnippets() string {
-	return showSnippetsImpl()
+	return showSnippetsImpl(nil)
+}
+
+func ShowSnippetsWithReader(r io.Reader) string {
+	return showSnippetsImpl(r)
 }
 
 func (m model) Init() tea.Cmd {

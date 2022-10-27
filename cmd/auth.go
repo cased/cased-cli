@@ -18,6 +18,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/containerd/console"
@@ -36,9 +38,103 @@ import (
 
 var browserCmd *exec.Cmd
 
-const loginAPI = "v2/api/auth"
+const (
+	loginAPI            = "v2/api/auth"
+	snippetsTriggerTime = 500 * time.Millisecond
+)
+
+type stdinReader struct {
+	detached  atomic.Bool
+	stdinChan chan []byte
+	reader    *bufio.Reader
+	lastInput []byte
+}
+
+func (r *stdinReader) detach() {
+	r.detached.Store(true)
+	select {
+	case <-r.stdinChan:
+		r.reader.UnreadByte()
+	default:
+		return
+	}
+}
+
+func (r *stdinReader) attach() {
+	// Send last input read from bubbletea back to our app
+	r.detached.Store(false)
+	r.stdinChan <- r.lastInput
+	r.lastInput = nil
+}
+
+func (r *stdinReader) isDetached() bool {
+	return r.detached.Load()
+}
+
+var sharedStdinReader stdinReader = stdinReader{
+	reader:    bufio.NewReader(os.Stdin),
+	stdinChan: make(chan []byte),
+}
+
+func (r *stdinReader) readLoop() {
+	var buffer [32]byte
+	for {
+		n, err := r.reader.Read(buffer[:])
+		if err != nil {
+			close(r.stdinChan)
+			return
+		}
+		// Keep last input read from bubbletea app
+		// When we close the bubbletea app (snippets), send the last
+		// input back to our app so we don't lose it.
+		if r.detached.Load() {
+			r.lastInput = make([]byte, n)
+			copy(r.lastInput, buffer[:n])
+		}
+		// debug(fmt.Sprintf("read: got %d bytes. is_detached=%v", n, r.detached.Load()))
+		r.stdinChan <- buffer[:n]
+	}
+}
+
+func (r *stdinReader) Read(p []byte) (n int, err error) {
+	b, ok := <-r.stdinChan
+
+	if !ok {
+		return 0, errors.New("stdin channel is closed")
+	}
+
+	copy(p, b)
+
+	return len(b), nil
+}
+
+const debugFileName = "ssh.log"
+
+var (
+	debugFile    *os.File
+	debugWritter *bufio.Writer
+	debug        func(string)
+)
+
+func debugImpl(msg string) {
+	debugWritter.WriteString(msg + "\n")
+	debugWritter.Flush()
+}
+
+func debugNull(msg string) {}
 
 func init() {
+	debug = debugNull
+
+	if len(os.Getenv("DEBUG")) > 0 {
+		var err error
+		debugFile, err = os.OpenFile(debugFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0744)
+		if err == nil {
+			debugWritter = bufio.NewWriter(debugFile)
+			debug = debugImpl
+		}
+	}
+
 	rootCmd.AddCommand(authCmd)
 }
 
@@ -186,6 +282,8 @@ func login(cmd *cobra.Command, args []string) {
 }
 
 func connect(host, token string) {
+	var connectedToPrompt atomic.Bool
+
 	config := &ssh.ClientConfig{
 		User: "cased",
 		Auth: []ssh.AuthMethod{
@@ -260,8 +358,12 @@ func connect(host, token string) {
 	}
 
 	go func() {
+		handshake := []byte{0xde, 0xad, 0xbe, 0xef}
+		disconnectedHandshake := []byte{0xef, 0xbe, 0xad, 0xde}
 		scanner := bufio.NewReader(stdout)
 		data := make([]byte, 1024)
+		hsPtr := 0 // handshake pointer to the current expected byte
+
 		for {
 			n, err := scanner.Read(data)
 			if err != nil {
@@ -273,6 +375,34 @@ func connect(host, token string) {
 				current.Reset()
 				os.Exit(0)
 			}
+
+			var hsBuffer []byte
+			if !connectedToPrompt.Load() {
+				hsBuffer = handshake
+			} else {
+				hsBuffer = disconnectedHandshake
+			}
+
+			// debug(fmt.Sprintf("ssh (raw): %v", data[:n]))
+			// look for handshake (connected to or disconnected from target prompt)
+			for _, b := range data[:n] {
+				if b == hsBuffer[hsPtr] {
+					hsPtr++
+					if hsPtr == len(hsBuffer) {
+						hsPtr = 0
+						connectedToPrompt.Store(!connectedToPrompt.Load())
+						break
+					}
+				} else if hsPtr > 0 {
+					// Reset handshake pointer, mismatched data
+					hsPtr = 0
+				}
+			}
+			// filtered := bytes.Replace(data[:n], []byte("\x1b[?2004l"), []byte{}, -1)
+			// filtered = bytes.Replace(filtered, []byte("\x1b[?2004h"), []byte{}, -1)
+			// filtered = bytes.Replace(filtered, []byte("]0;"), []byte{}, -1)
+			// debug(fmt.Sprintf("STDOUT (b): [%v]", filtered))
+			// debug(fmt.Sprintf("STDOUT (s): [%v]", string(filtered)))
 			os.Stdout.Write(data[:n])
 		}
 	}()
@@ -281,28 +411,50 @@ func connect(host, token string) {
 		scanner := bufio.NewScanner(stderr)
 
 		for scanner.Scan() {
-			fmt.Println(scanner.Text())
+			fmt.Fprint(os.Stderr, scanner.Text())
 		}
 	}()
 
 	session.Shell()
 
-	scanner := bufio.NewReader(os.Stdin)
-	b := make([]byte, 1)
+	var timer *time.Timer
+	timerIsOn := false
+
+	go sharedStdinReader.readLoop()
 
 	for {
-		c, err := scanner.ReadByte()
-		if err == io.EOF {
-			return
-		}
-		b[0] = c
-		if c == '/' {
-			snippet := ShowSnippets()
-			if snippet != "" {
-				stdin.Write([]byte(snippet))
+		if timerIsOn {
+			select {
+			case <-timer.C:
+				sharedStdinReader.detach() // give control of stdin to bubbletea
+				timerIsOn = false
+				snippet := ShowSnippetsWithReader(&sharedStdinReader)
+				sharedStdinReader.attach()
+				if snippet != "" {
+					stdin.Write([]byte(snippet))
+				}
+			case data, ok := <-sharedStdinReader.stdinChan:
+				if !ok {
+					return
+				}
+				timer.Stop()
+				timerIsOn = false
+				stdin.Write([]byte("/"))
+				stdin.Write(data)
 			}
 		} else {
-			stdin.Write(b)
+			select {
+			case data, ok := <-sharedStdinReader.stdinChan:
+				if !ok {
+					return
+				}
+				if data[0] == '/' && len(data) == 1 && connectedToPrompt.Load() {
+					timerIsOn = true
+					timer = time.NewTimer(snippetsTriggerTime)
+				} else {
+					stdin.Write(data)
+				}
+			}
 		}
 	}
 }
