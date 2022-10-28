@@ -383,15 +383,25 @@ func connect(host, token string) {
 				hsBuffer = disconnectedHandshake
 			}
 
-			// debug(fmt.Sprintf("ssh (raw): %v", data[:n]))
+			// debug(fmt.Sprintf("ssh (raw): len=%d, %v", n, data[:n]))
 			// look for handshake (connected to or disconnected from target prompt)
-			for _, b := range data[:n] {
+			for i, b := range data[:n] {
 				if b == hsBuffer[hsPtr] {
 					hsPtr++
 					if hsPtr == len(hsBuffer) {
+						// Handshake found.
+						// Send received data to the terminal but filter the handshake itself.
+						if (i + 1) == hsPtr {
+							// handshake found right in the start of the packet, i.e. data[:hsPtr] == handshake
+							os.Stdout.Write(data[hsPtr:])
+						} else {
+							// handshake found after the start of the packet
+							os.Stdout.Write(data[:(i-hsPtr)+1]) // write first bytes before the handshake
+							os.Stdout.Write(data[i+1:])         // write remaining bytes
+						}
 						hsPtr = 0
 						connectedToPrompt.Store(!connectedToPrompt.Load())
-						break
+						continue
 					}
 				} else if hsPtr > 0 {
 					// Reset handshake pointer, mismatched data
