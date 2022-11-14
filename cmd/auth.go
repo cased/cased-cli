@@ -155,25 +155,27 @@ func login(cmd *cobra.Command, args []string) {
 
 	casedServer := os.Getenv("CASED_SERVER")
 	if casedServer == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not found")
+		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not found\n")
 		os.Exit(1)
 	}
 
 	casedShell := args[0]
 	if casedShell == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.")
+		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.\n")
 		os.Exit(1)
 	}
 
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
 	if err != nil {
-		log.Fatalln("Unable to generate code verifier:", err)
+		fmt.Fprintf(os.Stderr, "[*] ERROR: Unable to generate code verifier: %v\n", err)
+		os.Exit(1)
 	}
 
 	codeChallenge, err := pkce.GenerateCodeChallenge(pkce.S256, codeVerifier)
 	if err != nil {
-		log.Fatalln("Unable to generate code challenge:", err)
+		fmt.Fprintf(os.Stderr, "[*] ERROR: Unable to generate code challenge: %v\n", err)
+		os.Exit(1)
 	}
 
 	loginURL := fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
@@ -187,38 +189,52 @@ func login(cmd *cobra.Command, args []string) {
 	client := http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalln("[*] ERROR: fetching auth URL from cased-shell:", err)
+		fmt.Fprintf(os.Stderr, "[*] ERROR: fetching auth URL from cased-shell: %v\n", err)
+		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
-		log.Fatalln("[*] ERROR: Invalid response from cased-shell server:", err)
+		fmt.Fprintf(os.Stderr, "[*] ERROR: Invalid response from cased-shell server: %v\n", err)
+		os.Exit(1)
 	}
 
 	authURL, ok := data["auth_url"]
 	if !ok {
-		log.Fatalln("[*] ERROR: Invalid response, 'auth_url' is missing")
+		fmt.Fprintf(os.Stderr, "[*] ERROR: Invalid response, 'auth_url' is missing\n")
+		os.Exit(1)
 	}
 
 	pollURL, ok := data["poll_url"]
 	if !ok {
-		log.Fatalln("[*] ERROR: Invalid response, 'poll_url' is missing.")
+		fmt.Fprintf(os.Stderr, "[*] ERROR: 'poll_url' is missing.\n")
+		os.Exit(1)
 	}
 
 	tokenURL, ok := data["token_url"]
 	if !ok {
-		log.Fatalln("[*] ERROR: Invalid response, 'token_url' is missing.")
+		fmt.Fprintf(os.Stderr, "[*] ERROR: Invalid response, 'token_url' is missing.\n")
+		os.Exit(1)
 	}
 
-	openbrowser(authURL.(string))
+	if !openbrowser(authURL.(string)) {
+		fmt.Println("Please access the URL below in order to proceed with the authentication:")
+		fmt.Println(authURL)
+	}
 
-	log.Print("Waiting for authentication ")
+	fmt.Print("Waiting for authentication ")
+
+	// Start polling after some delay
+	time.Sleep(5 * time.Second)
+
+	// try to get token every 3 secs
+	const TryInterval = 3 * time.Second
+	const MaxTries = 30
 
 	// Poll the API for authorization_code.
-	const MaxIterations = 30
-	for i := 0; i < MaxIterations; i++ {
+	for i := 0; i < MaxTries; i++ {
 		resp, err := http.Get(pollURL.(string))
 		if err != nil {
 			log.Fatal("[*] ERROR: Unable to get authorization code:", err)
@@ -242,11 +258,12 @@ func login(cmd *cobra.Command, args []string) {
 		}
 
 		fmt.Print(".")
-		time.Sleep(time.Second)
+		time.Sleep(TryInterval)
 	}
 
 	if authCode == "" {
-		log.Fatalln("[*] Authentication timed out, exiting...")
+		fmt.Fprintf(os.Stderr, "\n\n[*] Authentication timed out, exiting...\n")
+		os.Exit(1)
 	}
 
 	req, err = http.NewRequest("GET", tokenURL.(string), nil)
@@ -469,7 +486,7 @@ func connect(host, token string) {
 	}
 }
 
-func openbrowser(url string) {
+func openbrowser(url string) bool {
 	switch runtime.GOOS {
 	case "linux":
 		browserCmd = exec.Command("xdg-open", url)
@@ -478,10 +495,14 @@ func openbrowser(url string) {
 	case "darwin":
 		browserCmd = exec.Command("open", url)
 	default:
-		log.Fatal("unsupported platform")
+		log.Println("Unknow OS platform")
+		return false
 	}
 
 	if err := browserCmd.Start(); err != nil {
-		log.Fatal(err)
+		log.Println("Unable to launch web browser: ", err)
+		return false
 	}
+
+	return true
 }
