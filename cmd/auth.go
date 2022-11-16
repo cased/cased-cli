@@ -155,7 +155,13 @@ func login(cmd *cobra.Command, args []string) {
 
 	casedServer := os.Getenv("CASED_SERVER")
 	if casedServer == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not found\n")
+		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not set.\n")
+		os.Exit(1)
+	}
+
+	casedHTTPServer := os.Getenv("CASED_HTTP_SERVER")
+	if casedHTTPServer == "" {
+		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_HTTP_SERVER env not set.\n")
 		os.Exit(1)
 	}
 
@@ -224,7 +230,7 @@ func login(cmd *cobra.Command, args []string) {
 		fmt.Println(authURL)
 	}
 
-	fmt.Print("Waiting for authentication ")
+	fmt.Print("Waiting for authentication...")
 
 	// Start polling after some delay
 	time.Sleep(5 * time.Second)
@@ -294,6 +300,11 @@ func login(cmd *cobra.Command, args []string) {
 
 	fmt.Println()
 	log.Println("Authentication successful")
+	log.Println("Fetching remote data...")
+
+	if err = fetchSnippets(token); err != nil {
+		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
+	}
 
 	connect(casedServer, token)
 }
