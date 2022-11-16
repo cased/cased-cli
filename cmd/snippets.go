@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -24,8 +27,8 @@ const (
 var (
 	termWidth          = 80
 	termHeight         = 25
-	snippetRegex       = regexp.MustCompile(`\{\{[^}]+\}\}`) // matches {{string}}
-	snippetFilterRegex = regexp.MustCompile(`\{\{|\}\}`)     // removes the {{ and }} from the string
+	snippetRegex       = regexp.MustCompile(`\$\{[^}]+\}`) // matches ${string}
+	snippetFilterRegex = regexp.MustCompile(`\$\{|\}`)     // removes the ${} from the string
 
 	inactiveTabBorder = tabBorderWithBottom("┴", "─", "┴")
 	activeTabBorder   = tabBorderWithBottom("┘", " ", "└")
@@ -44,22 +47,28 @@ var (
 	blurredBackBtn    = fmt.Sprintf("[ %s ]", blurredStyle.Render("Back"))
 )
 
-// A snippet has a title and an associated command
+// A snippet representation
 type snippet struct {
-	title string
-	cmd   string
+	Name      string `json:"name"`
+	Command   string `json:"command"`
+	Arguments []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Default     string `json:"default"`
+	}
+	Categories []string `json:"categories"`
 }
 
 // The collection of all snippets are represented internally by this data structure
 type snippets struct {
-	categories []string
-	items      [][]snippet
+	Categories []string  `json:"categories"`
+	Snippets   []snippet `json:"snippets"`
 }
 
 // Implementation of list.Model interface
-func (s snippet) Title() string       { return s.title }
-func (s snippet) Description() string { return s.cmd }
-func (s snippet) FilterValue() string { return s.title }
+func (s snippet) Title() string       { return s.Name }
+func (s snippet) Description() string { return s.Command }
+func (s snippet) FilterValue() string { return s.Name }
 
 // Used to display a list of available snippet categories
 // when Tabs don't fit in the screen.
@@ -100,46 +109,71 @@ type model struct {
 }
 
 func init() {
-	// Enable debugging log if DEBUG env is not empty.
-	if len(os.Getenv("DEBUG")) > 0 {
-		logFile, err := tea.LogToFile("debug.log", "")
-		if err != nil {
-			log.Fatalln("DEBUG:", err)
-		}
-		defer logFile.Close()
-	} else {
-		log.SetOutput(ioutil.Discard)
-	}
 	rootCmd.AddCommand(snippetsCmd)
 }
 
-var demoSnippets = snippets{
-	// categories: []string{"Database", "Logs", "Server Management", "General"},
-	categories: []string{"Database", "Logs", "Server Management", "General", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
-	// categories: []string{"Database", "Logs"},
-	items: [][]snippet{
-		{
-			{"Connect to PostgreSQL", "psql -h {{host}} -p {{port}} -U {{user}} -W {{db}}"},
-			{"Connect to MySQL", "mysql -u {{user}} -p {{db}}"},
-			{"Show active MySQL connections", "mysql ..."},
-		},
-		{
-			{"Monitor log", "tail -f /var/log/{{logfile}}"},
-			{"Monitor apache logs", "tail -f /var/log/apache.log"},
-			{"Monitor database logs", "tail -f /var/log/postgresql.log"},
-			{"Check container log", "docker container logs -f <container>"},
-		},
-		{
-			{"Restart docker", "sudo service docker restart"},
-			{"Restart PostgreSQL", "sudo service postgresql restart"},
-		},
-		{
-			{"Show active users", "who"},
-			{"Show CPU stats", "vmstat"},
-		},
-		{}, // AAAAAAAAAAAAAAAAAAA....
-	},
+const demoSnippetsData = `
+{
+	"snippets": [
+	  {
+		"name": "Create Git branch on remote server",
+		"command": "git push ${server} ${branch_name}\ngit fetch ${banana}",
+		"arguments": [
+		  {
+			"name": "server",
+			"description": "The name of the remote server, usually origin",
+			"default": "origin"
+		  },
+		  {
+			"name": "branch_name",
+			"description": "Your branch name"
+		  }
+		],
+		"categories": [
+		  "git"
+		],
+		"path": "git-undo.yaml"
+	  },
+	  {
+		"name": "List top 10 processes",
+		"command": "ps -eo pmem,pcpu,pid,user,args | sort -k 1 -r | head -10",
+		"categories": [
+		  "system"
+		],
+		"path": "list-processes.yaml"
+	  },
+	  {
+		"name": "terraform apply",
+		"command": "terraform apply ${options} ${plan_file}",
+		"arguments": [
+		  {
+			"name": "options",
+			"description": "Any terraform options",
+			"default": "-refresh=FALSE"
+		  },
+		  {
+			"name": "plan_file",
+			"description": "The plan file to use for the apply changes"
+		  }
+		],
+		"categories": [
+		  "devops",
+		  "terraform"
+		],
+		"path": "terraform-apply.yaml"
+	  }
+	],
+	"categories": [
+	  "git",
+	  "terraform",
+	  "system",
+	  "devops"
+	]
 }
+`
+
+var remoteSnippetsData []byte
+var fetchedSnippets snippets
 
 var selectedSnippet string
 
@@ -154,13 +188,24 @@ var snippetsCmd = &cobra.Command{
 var logFile *os.File
 
 func showSnippets(cmd *cobra.Command, args []string) {
-	fmt.Println(showSnippetsImpl(nil))
+	fmt.Println(showSnippetsImpl(nil, []byte(demoSnippetsData)))
 }
 
-func showSnippetsImpl(reader io.Reader) string {
+func showSnippetsImpl(reader io.Reader, snippetData []byte) string {
 	selectedSnippet = ""
 	term := console.Current()
 	termSize, _ := term.Size()
+
+	// Enable debugging log if DEBUG env is not empty.
+	if len(os.Getenv("DEBUG")) > 0 {
+		logFile, err := tea.LogToFile("debug.log", "")
+		if err != nil {
+			log.Fatalln("DEBUG:", err)
+		}
+		defer logFile.Close()
+	} else {
+		log.SetOutput(ioutil.Discard)
+	}
 
 	// Keep track of initial terminal dimensions
 	if termSize.Width > 0 {
@@ -170,12 +215,22 @@ func showSnippetsImpl(reader io.Reader) string {
 		termHeight = int(termSize.Height)
 	}
 
-	m := model{tabs: demoSnippets.categories, selectedCategory: -1}
+	if err := json.Unmarshal(snippetData, &fetchedSnippets); err != nil {
+		fmt.Fprintf(os.Stderr, "parsing demo snippets: %v\n", err)
+		os.Exit(1)
+	}
+
+	m := model{tabs: fetchedSnippets.Categories, selectedCategory: -1}
 
 	for i := range m.tabs {
-		items := make([]list.Item, len(demoSnippets.items[i]))
-		for k, v := range demoSnippets.items[i] {
-			items[k] = snippet{title: v.title, cmd: v.cmd}
+		items := make([]list.Item, 0)
+		for _, snipt := range fetchedSnippets.Snippets {
+			for _, cat := range snipt.Categories {
+				if cat == m.tabs[i] {
+					items = append(items, snippet{Name: snipt.Name, Command: snipt.Command})
+					break
+				}
+			}
 		}
 		m.snippets = append(m.snippets, list.New(items, list.NewDefaultDelegate(), 0, 0))
 		m.snippets[i].SetShowTitle(false)
@@ -190,8 +245,8 @@ func showSnippetsImpl(reader io.Reader) string {
 		m.currentScreen = snippetCategoryScreen
 	}
 
-	snippetCategories := make([]list.Item, len(demoSnippets.categories))
-	for i, v := range demoSnippets.categories {
+	snippetCategories := make([]list.Item, len(fetchedSnippets.Categories))
+	for i, v := range fetchedSnippets.Categories {
 		snippetCategories[i] = snippetCategory{title: v}
 	}
 	m.snippetCategories = list.New(snippetCategories, list.NewDefaultDelegate(), 0, 0)
@@ -211,11 +266,11 @@ func showSnippetsImpl(reader io.Reader) string {
 }
 
 func ShowSnippets() string {
-	return showSnippetsImpl(nil)
+	return showSnippetsImpl(nil, remoteSnippetsData)
 }
 
 func ShowSnippetsWithReader(r io.Reader) string {
-	return showSnippetsImpl(r)
+	return showSnippetsImpl(r, remoteSnippetsData)
 }
 
 func (m model) Init() tea.Cmd {
@@ -304,8 +359,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				snipt, ok := m.getCurrentList().SelectedItem().(snippet)
 				if ok {
 					m.currentScreen = snippetEditScreen
-					m.snippetTitle = snipt.title
-					parseSnippet(snipt.cmd, &m)
+					m.snippetTitle = snipt.Name
+					parseSnippet(snipt.Command, &m)
 					return m, nil
 				}
 			}
@@ -341,7 +396,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if m.currentScreen == snippetEditScreen {
 		if m.snippetInputs != nil {
-			log.Println("Updating fields...")
 			cmds := make([]tea.Cmd, len(m.snippetInputs))
 			for i := range m.snippetInputs {
 				m.snippetInputs[i], cmds[i] = m.snippetInputs[i].Update(msg)
@@ -354,14 +408,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 
-	log.Printf("Updating list %p, msg = %v\n", m.getCurrentList(), msg)
 	*(m.getCurrentList()), cmd = m.getCurrentList().Update(msg)
 
 	return m, cmd
 }
 
 func (m model) View() string {
-	log.Println("View() currentScreen = ", m.currentScreen)
 	if m.currentScreen == snippetEditScreen {
 		return drawSnippetEditScreen(m)
 	}
@@ -473,7 +525,7 @@ func parseSnippet(snippet string, m *model) {
 	m.focused = 0
 
 	locs := snippetRegex.FindAllStringIndex(snippet, -1)
-	log.Printf("Parse snippet: %s, tokens=%d\n", snippet, len(locs))
+	log.Printf("Parse snippet: [%#v], tokens=%d\n", snippet, len(locs))
 	if locs != nil {
 		m.snippetInputs = make([]textinput.Model, len(locs))
 		off := 0
@@ -495,7 +547,7 @@ func parseSnippet(snippet string, m *model) {
 			m.snippetInputs[i].Validate = nil
 
 			m.snippetTokens = append(m.snippetTokens, m.snippetInputs[i])
-			off = l[1] + 1
+			off = l[1]
 		}
 
 		m.focused = 0
@@ -540,11 +592,14 @@ func drawSnippetEditScreen(m model) string {
 
 	if m.snippetInputs != nil {
 		j := 0
-		for i, s := range m.snippetTokens {
+		for _, s := range m.snippetTokens {
 			switch v := s.(type) {
 			case string:
-				result.WriteString(v)
 				snippet.WriteString(v)
+				// Indent multiline snippets to start in the same column.
+				// 17 spaces to match fmt.Sprintf("%15s: ", "Command") above
+				v = strings.ReplaceAll(v, "\n", fmt.Sprintf("\n%17s", " "))
+				result.WriteString(v)
 			case textinput.Model:
 				value := m.snippetInputs[j].Value()
 				if value == "" {
@@ -555,10 +610,10 @@ func drawSnippetEditScreen(m model) string {
 					snippet.WriteString(value)
 				}
 
-				if i < len(m.snippetTokens) {
-					snippet.WriteRune(' ')
-					result.WriteRune(' ')
-				}
+				// if i < len(m.snippetTokens) {
+				// 	snippet.WriteRune(' ')
+				// 	result.WriteRune(' ')
+				// }
 				form.WriteString(m.snippetInputs[j].View())
 				form.WriteRune('\n')
 				j += 1
@@ -597,4 +652,42 @@ func (m *model) back() {
 	m.snippetInputs = nil
 	m.focused = 0
 	m.currentScreen = snippetScreen
+}
+
+func fetchSnippets(token string) error {
+	casedServer := os.Getenv("CASED_HTTP_SERVER")
+	const endpoint = "/snippets"
+	apiURL := fmt.Sprintf("http://%s%s", casedServer, endpoint)
+
+	var err error
+	var req *http.Request
+
+	req, err = http.NewRequest("GET", apiURL, nil)
+
+	if err != nil {
+		return err
+	}
+
+	// Token based authentication
+	req.Header.Add("Authorization", "Bearer "+token)
+
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+		return errors.New("HTTP Error: " + resp.Status)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	remoteSnippetsData = body
+	return nil
 }
