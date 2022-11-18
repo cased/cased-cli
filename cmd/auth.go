@@ -159,10 +159,10 @@ func login(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
 	casedServer := os.Getenv("CASED_SERVER")
-	if casedServer == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not set.\n")
-		os.Exit(1)
+	if casedServer != "" {
+		fmt.Printf("CASED_SERVER: %s\n", casedServer)
 	}
 
 	casedHTTPServer := os.Getenv("CASED_SERVER_API")
@@ -296,9 +296,20 @@ func login(cmd *cobra.Command, args []string) {
 		log.Fatalln("[*] ERROR: Invalid response, 'token' is missing")
 	}
 
+	fmt.Println()
+
+	if casedServer == "" {
+		// CASED_SERVER env was not provided, it must be retrieved from cased-shell
+		// along with the token.
+		srv, ok := tokenData["cased_server"]
+		if !ok {
+			log.Fatalln("Unable to detect cased-server address")
+		}
+		casedServer = srv.(string)
+	}
+
 	token = tk.(string)
 
-	fmt.Println()
 	log.Println("Authentication successful")
 	log.Println("Fetching remote data...")
 
