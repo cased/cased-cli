@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -654,13 +655,17 @@ func (m *model) back() {
 	m.currentScreen = snippetScreen
 }
 
-func fetchSnippets(token string) error {
-	casedServer := os.Getenv("CASED_HTTP_SERVER")
+func fetchSnippets(server, token string) error {
 	const endpoint = "/snippets"
-	apiURL := fmt.Sprintf("http://%s%s", casedServer, endpoint)
+	apiURL := fmt.Sprintf("%s%s", server, endpoint)
 
 	var err error
 	var req *http.Request
+
+	if os.Getenv("TLS_SKIP_VERIFY") == "true" {
+		// Disable TLS verification
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 
 	req, err = http.NewRequest("GET", apiURL, nil)
 

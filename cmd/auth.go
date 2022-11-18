@@ -153,23 +153,23 @@ func login(cmd *cobra.Command, args []string) {
 	var token string
 	var authCode string
 
+	casedShell := args[0]
+	if casedShell == "" {
+		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.\n")
+		os.Exit(1)
+	}
+
 	casedServer := os.Getenv("CASED_SERVER")
 	if casedServer == "" {
 		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not set.\n")
 		os.Exit(1)
 	}
 
-	casedHTTPServer := os.Getenv("CASED_HTTP_SERVER")
+	casedHTTPServer := os.Getenv("CASED_SERVER_API")
 	if casedHTTPServer == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_HTTP_SERVER env not set.\n")
-		os.Exit(1)
+		casedHTTPServer = fmt.Sprintf("https://%s/cased-server", casedShell)
 	}
-
-	casedShell := args[0]
-	if casedShell == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.\n")
-		os.Exit(1)
-	}
+	fmt.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
@@ -302,7 +302,7 @@ func login(cmd *cobra.Command, args []string) {
 	log.Println("Authentication successful")
 	log.Println("Fetching remote data...")
 
-	if err = fetchSnippets(token); err != nil {
+	if err = fetchSnippets(casedHTTPServer, token); err != nil {
 		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
 	}
 
