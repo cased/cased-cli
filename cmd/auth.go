@@ -153,23 +153,23 @@ func login(cmd *cobra.Command, args []string) {
 	var token string
 	var authCode string
 
-	casedServer := os.Getenv("CASED_SERVER")
-	if casedServer == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_SERVER env not set.\n")
-		os.Exit(1)
-	}
-
-	casedHTTPServer := os.Getenv("CASED_HTTP_SERVER")
-	if casedHTTPServer == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: CASED_HTTP_SERVER env not set.\n")
-		os.Exit(1)
-	}
-
 	casedShell := args[0]
 	if casedShell == "" {
 		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.\n")
 		os.Exit(1)
 	}
+
+	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
+	casedServer := os.Getenv("CASED_SERVER")
+	if casedServer != "" {
+		fmt.Printf("CASED_SERVER: %s\n", casedServer)
+	}
+
+	casedHTTPServer := os.Getenv("CASED_SERVER_API")
+	if casedHTTPServer == "" {
+		casedHTTPServer = fmt.Sprintf("https://%s/cased-server", casedShell)
+	}
+	fmt.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
@@ -296,13 +296,24 @@ func login(cmd *cobra.Command, args []string) {
 		log.Fatalln("[*] ERROR: Invalid response, 'token' is missing")
 	}
 
+	fmt.Println()
+
+	if casedServer == "" {
+		// CASED_SERVER env was not provided, it must be retrieved from cased-shell
+		// along with the token.
+		srv, ok := tokenData["cased_server"]
+		if !ok {
+			log.Fatalln("Unable to detect cased-server address")
+		}
+		casedServer = srv.(string)
+	}
+
 	token = tk.(string)
 
-	fmt.Println()
 	log.Println("Authentication successful")
 	log.Println("Fetching remote data...")
 
-	if err = fetchSnippets(token); err != nil {
+	if err = fetchSnippets(casedHTTPServer, token); err != nil {
 		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
 	}
 
