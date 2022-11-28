@@ -58,23 +58,30 @@ Finally, run the following command to get `cased-cli` installed on your local ma
 
 ## Usage
 
--  Run `$ cased-cli auth instance.domain`, where instance.domain is the domain name where [cased-shell](https://github.com/cased/shell) was installed and running:
+   - Run `$ cased-cli auth instance.domain`, where instance.domain is the domain name where [cased-shell](https://github.com/cased/shell) was installed and running:
+
   <p>
     <img src="https://github.com/cased/cased-cli/blob/main/images/auth.png" alt="Sample authentication using cased-shell running on a GitHub codespaces">
   </p>
--  A web browser should popup asking the user to fill in login credentials:
+
+   -  A web browser should popup asking the user to fill in login credentials:
+
   <p>
     <img src="https://github.com/cased/cased-cli/blob/main/images/login_idp.png" alt="Login Credentials">
   </p>
-- If authentication is successful, a message will be displayed in the web browser, the user can close the web-browser/tab and back to the terminal:
+
+   - If authentication is successful, a message will be displayed in the web browser, the user can close the web-browser/tab and back to the terminal:
+   
   <p>
     <img src="https://github.com/cased/cased-cli/blob/main/images/login_ok.png" alt="Login OK">
   </p>
-- After a successfull authentication, `cased-cli` displays a list of available prompts in the terminal.
+
+  - After a successfull authentication, `cased-cli` displays a list of available prompts in the terminal.
+
 - Users can navigate the list using up/down arrow key.
 - A '/' key triggers the search, which allows users to filter prompts by name/description.
 - Pressing 'q' will exit the program.
-- Finally, pressing <ENTER> will connect to the currently selected prompt in the list:
+- Finally, pressing \<ENTER\> will connect to the currently selected prompt in the list:
   <p>
     <img src="https://github.com/cased/cased-cli/blob/main/images/connecting.png" alt="Connecting to a prompt">
   </p>
@@ -107,11 +114,11 @@ $ ./cased-cli auth <domain>
   </p>
 - The snippets are organized in categories, each category has its own tab.
 - To navigate between snippet categories use the left anf right arrows in the keyboard.
-- To search for a snippet press the '/' key, pressing <ESC> will get back to the previous screen.
+- To search for a snippet press the '/' key, pressing \<ESC\> will get back to the previous screen.
 - Pressing 'q' will exit the snippets screen and get user back to the shell.
 - Press UP/Down keys to navigate between snippets in the current selected tab/category.
-- Press <ENTER> to select a snippet, in the next screen the user can edit the snippet arguments, press <ENTER> again to submit, or use the [Submit] button. Press <ESC> to get back to the previous menu.
-- 
+- Press \<ENTER\> to select a snippet, in the next screen the user can edit the snippet arguments, press \<ENTER\> again to submit, or use the [Submit] button. Press \<ESC\> to get back to the previous menu.
+
 ## Contributing / Reporting issues
 
 ### Creating a release
