@@ -60,15 +60,15 @@ Finally, run the following command to get `cased-cli` installed on your local ma
 
 -  Run `$ cased-cli auth instance.domain`, where instance.domain is the domain name where [cased-shell](https://github.com/cased/shell) was installed and running:
   <p>
-    <img src="https://github.com/cased/cased-cli/images/auth.png" alt="Sample authentication using cased-shell running on a GitHub codespaces">
+    <img src="https://github.com/cased/cased-cli/blob/main/images/auth.png" alt="Sample authentication using cased-shell running on a GitHub codespaces">
   </p>
 -  A web browser should popup asking the user to fill in login credentials:
   <p>
-    <img src="https://github.com/cased/cased-cli/images/login_idp.png" alt="Login Credentials">
+    <img src="https://github.com/cased/cased-cli/blob/main/images/login_idp.png" alt="Login Credentials">
   </p>
 - If authentication is successful, a message will be displayed in the web browser, the user can close the web-browser/tab and back to the terminal:
   <p>
-    <img src="https://github.com/cased/cased-cli/images/login_ok.png" alt="Login OK">
+    <img src="https://github.com/cased/cased-cli/blob/main/images/login_ok.png" alt="Login OK">
   </p>
 - After a successfull authentication, `cased-cli` displays a list of available prompts in the terminal.
 - Users can navigate the list using up/down arrow key.
@@ -76,7 +76,7 @@ Finally, run the following command to get `cased-cli` installed on your local ma
 - Pressing 'q' will exit the program.
 - Finally, pressing <ENTER> will connect to the currently selected prompt in the list:
   <p>
-    <img src="https://github.com/cased/cased-cli/images/connecting.png" alt="Connecting to a prompt">
+    <img src="https://github.com/cased/cased-cli/blob/main/images/connecting.png" alt="Connecting to a prompt">
   </p>
 - When connected to a prompt, the user can interact with it as usual, running `exit` command should get the user back to the prompts screen.
 - Pressing '/' during a SSH session will trigger the [snippets](#snippets) screen
@@ -103,7 +103,7 @@ $ ./cased-cli auth <domain>
 - Type `/` during a SSH session (it must be the first character in the command line)
 - A screen similar to the one bellow should be displayed (if snippets are available):
   <p>
-    <img src="https://github.com/cased/cased-cli/images/snippets_1.png" alt="Snippets Menu">
+    <img src="https://github.com/cased/cased-cli/blob/main/images/snippets_1.png" alt="Snippets Menu">
   </p>
 - The snippets are organized in categories, each category has its own tab.
 - To navigate between snippet categories use the left anf right arrows in the keyboard.
