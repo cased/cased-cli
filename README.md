@@ -58,7 +58,7 @@ Finally, run the following command to get `cased-cli` installed on your local ma
 
 ## Usage
 
-   - Run `$ cased-cli auth instance.domain`, where instance.domain is the domain name where [cased-shell](https://github.com/cased/shell) was installed and running:
+   - Run `$ cased-cli auth instance.domain`, where instance.domain is the domain name where [cased-shell](https://github.com/cased/shell) was installed and running. Following is a sample authentication using an cased-shell instance running in a GitHub codespaces used only demonstration purposes.
 
   <p>
     <img src="https://github.com/cased/cased-cli/blob/main/images/auth.png" alt="Sample authentication using cased-shell running on a GitHub codespaces">
@@ -76,7 +76,11 @@ Finally, run the following command to get `cased-cli` installed on your local ma
     <img src="https://github.com/cased/cased-cli/blob/main/images/login_ok.png" alt="Login OK">
   </p>
 
-  - After a successfull authentication, `cased-cli` displays a list of available prompts in the terminal.
+  - After a successfull authentication, `cased-cli` displays a list of available prompts in the terminal. Following is a list from this demo setup:
+
+  <p>
+    <img src="https://github.com/cased/cased-cli/blob/main/images/prompts.png" alt="Login OK">
+  </p>
 
 - Users can navigate the list using up/down arrow key.
 - A '/' key triggers the search, which allows users to filter prompts by name/description.
