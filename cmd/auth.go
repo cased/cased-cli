@@ -143,50 +143,57 @@ var authCmd = &cobra.Command{
 	Use:     "auth instance.domain",
 	Short:   "Authenticate cased-cli with the IDP",
 	Long:    `Authenticate cased-cli with the IDP `,
-	Example: "cased auth instance.domain",
+	Example: "cased-cli auth instance.domain",
 	// auth requires exactly one positional argument, a cased-shell instance hostname
 	Args: cobra.ExactArgs(1),
 	Run:  login,
 }
 
-func login(cmd *cobra.Command, args []string) {
-	var token string
-	var authCode string
+var casedServer string
+var casedHTTPServer string
 
+func init() {
+	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
+	casedServer = os.Getenv("CASED_SERVER")
+	casedHTTPServer = os.Getenv("CASED_SERVER_API")
+}
+
+func login(cmd *cobra.Command, args []string) {
 	casedShell := args[0]
 	if casedShell == "" {
 		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.\n")
 		os.Exit(1)
 	}
 
-	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
-	casedServer := os.Getenv("CASED_SERVER")
 	if casedServer != "" {
-		fmt.Printf("CASED_SERVER: %s\n", casedServer)
+		log.Printf("CASED_SERVER: %s\n", casedServer)
 	}
 
-	casedHTTPServer := os.Getenv("CASED_SERVER_API")
 	if casedHTTPServer == "" {
 		casedHTTPServer = fmt.Sprintf("https://%s/cased-server", casedShell)
+	} else {
+		log.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 	}
-	fmt.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: Unable to generate code verifier: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("[*] ERROR: Unable to generate code verifier: %v\n", err)
 	}
 
 	codeChallenge, err := pkce.GenerateCodeChallenge(pkce.S256, codeVerifier)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: Unable to generate code challenge: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("[*] ERROR: Unable to generate code challenge: %v\n", err)
 	}
 
 	loginURL := fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
 
 	req, err := http.NewRequest("GET", loginURL, nil)
+
+	// If cased-cli is running in test mode, skip authentication.
+	if testMode {
+		req.Header.Add("X-SKIP-AUTH", "true")
+	}
 
 	loginArgs := url.Values{}
 	loginArgs.Add("cc", codeChallenge)
@@ -203,36 +210,92 @@ func login(cmd *cobra.Command, args []string) {
 	var data map[string]interface{}
 	err = json.NewDecoder(resp.Body).Decode(&data)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: Invalid response from cased-shell server: %v\n", err)
+		log.Printf("HTTP response status: %d/%s\n", resp.StatusCode, resp.Status)
+		if resp.StatusCode == http.StatusOK {
+			log.Printf("Unable to parse response: %v\n", err)
+		}
 		os.Exit(1)
 	}
 
-	authURL, ok := data["auth_url"]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: Invalid response, 'auth_url' is missing\n")
-		os.Exit(1)
+	token, err := getToken(data, codeVerifier)
+	if err != nil {
+		log.Fatal("[*] ERROR: ", err)
 	}
 
-	pollURL, ok := data["poll_url"]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: 'poll_url' is missing.\n")
-		os.Exit(1)
+	log.Println("Authentication successful")
+	log.Println("Fetching remote data...")
+
+	if err = fetchSnippets(casedHTTPServer, token); err != nil {
+		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
 	}
 
-	tokenURL, ok := data["token_url"]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: Invalid response, 'token_url' is missing.\n")
-		os.Exit(1)
+	connect(casedServer, token)
+}
+
+// getToken parses the response from cased-shell then attempts to launch a web browser
+// which directs the user to the login page (auth_url).
+// When running integration tests, the token is directly sent by cased-shell in the initial response.
+func getToken(data map[string]interface{}, codeVerifier string) (string, error) {
+	// In test mode the first cased-shell response must contain a valid token.
+	// The response is in the format: {"token": "value", "status": "ok|error", "cased_server": "address:port"}
+	if testMode {
+		if err := checkFields(data, "status", "token"); err != nil {
+			return "", fmt.Errorf(`%s (integration test)`, err)
+		}
+
+		if data["status"].(string) != "ok" {
+			return "", errors.New("Internal server error (integration test)")
+		}
+
+		if data["token"].(string) == "" {
+			return "", errors.New(`Invalid response: "token" is empty (integration test)`)
+		}
+
+		if casedServer == "" {
+			// CASED_SERVER env was not provided, it must be retrieved from cased-shell
+			// along with the token.
+			srv, ok := data["cased_server"]
+			if !ok {
+				return "", errors.New(`Invalid response: "cased_server" is missing`)
+			}
+			casedServer = srv.(string)
+		}
+
+		return data["token"].(string), nil
 	}
 
-	if !openbrowser(authURL.(string)) {
+	if err := checkFields(data, "auth_url", "poll_url", "token_url"); err != nil {
+		return "", err
+	}
+
+	authURL := data["auth_url"].(string)
+	pollURL := data["poll_url"].(string)
+	tokenURL := data["token_url"].(string)
+
+	if !openbrowser(authURL) {
 		fmt.Println("Please access the URL below in order to proceed with the authentication:")
 		fmt.Println(authURL)
 	}
 
 	fmt.Print("Waiting for authentication...")
 
-	// Start polling after some delay
+	token, err := pollToken(pollURL, tokenURL, codeVerifier)
+	if err != nil {
+		return "", err
+	}
+
+	return token, nil
+}
+
+// pollToken polls the poll_url sent by cased-shell in order to get an
+// authorization code (available after user authentication in the web browser).
+// Then, it attempts to get a token from token_url using the generated codeVerifier/
+// authentication_code provided.
+// More about the authorization flow on: https://www.oauth.com/oauth2-servers/device-flow/
+func pollToken(pollURL, tokenURL, codeVerifier string) (string, error) {
+	var authCode string
+
+	// Start polling after some delay (web browser opening, user filling in credentials, etc...)
 	time.Sleep(5 * time.Second)
 
 	// try to get token every 3 secs
@@ -241,21 +304,21 @@ func login(cmd *cobra.Command, args []string) {
 
 	// Poll the API for authorization_code.
 	for i := 0; i < MaxTries; i++ {
-		resp, err := http.Get(pollURL.(string))
+		resp, err := http.Get(pollURL)
 		if err != nil {
-			log.Fatal("[*] ERROR: Unable to get authorization code:", err)
+			return "", fmt.Errorf("Unable to get authorization code (poll URL): %v", err)
 		}
 
 		if resp.StatusCode == http.StatusOK {
 			var data map[string]interface{}
 			err = json.NewDecoder(resp.Body).Decode(&data)
 			if err != nil {
-				log.Fatal("[*] ERROR: Invalid response from cased-shell server:", err)
+				return "", fmt.Errorf("Invalid response (poll URL): %v", err)
 			}
 
 			ac, ok := data["authorization_code"]
 			if !ok {
-				log.Fatal("[*] ERROR: Invalid response, 'authorization_code' is missing")
+				return "", errors.New(`Invalid response: "authorization_code" is missing`)
 			}
 
 			authCode = ac.(string)
@@ -268,72 +331,45 @@ func login(cmd *cobra.Command, args []string) {
 	}
 
 	if authCode == "" {
-		fmt.Fprintf(os.Stderr, "\n\n[*] Authentication timed out, exiting...\n")
-		os.Exit(1)
+		return "", errors.New("Authentication timed out, exiting...")
 	}
 
-	req, err = http.NewRequest("GET", tokenURL.(string), nil)
+	req, err := http.NewRequest("GET", tokenURL, nil)
 
 	tokenArgs := url.Values{}
 	tokenArgs.Add("authorization_code", authCode)
 	tokenArgs.Add("cc", codeVerifier)
 	req.URL.RawQuery = tokenArgs.Encode()
 
+	client := http.Client{}
 	respToken, err := client.Do(req)
 	if err != nil {
-		log.Fatalln("[*] ERROR: fetching token from cased-shell:", err)
+		return "", fmt.Errorf("Failed to fetch token_url (%d/%s): %v", respToken.StatusCode, respToken.Status, err)
 	}
 	defer respToken.Body.Close()
 
-	var tokenData map[string]interface{}
-	err = json.NewDecoder(respToken.Body).Decode(&tokenData)
+	var data map[string]interface{}
+	err = json.NewDecoder(respToken.Body).Decode(&data)
 	if err != nil {
-		log.Fatalln("[*] ERROR: Fetching token, invalid response from cased-shell server:", err)
+		return "", fmt.Errorf("Unable to parse response (token_url): %v", err)
 	}
 
-	tk, ok := tokenData["token"]
+	tk, ok := data["token"]
 	if !ok {
-		log.Fatalln("[*] ERROR: Invalid response, 'token' is missing")
+		return "", errors.New(`Invalid response (token_url): "token" is missing`)
 	}
-
-	fmt.Println()
 
 	if casedServer == "" {
 		// CASED_SERVER env was not provided, it must be retrieved from cased-shell
 		// along with the token.
-		srv, ok := tokenData["cased_server"]
+		srv, ok := data["cased_server"]
 		if !ok {
-			log.Fatalln("Unable to detect cased-server address")
+			return "", errors.New(`Invalid response (token_url): "cased_server" is missing`)
 		}
 		casedServer = srv.(string)
 	}
 
-	token = tk.(string)
-
-	log.Println("Authentication successful")
-	log.Println("Fetching remote data...")
-
-	if err = fetchSnippets(casedHTTPServer, token); err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
-	}
-
-	// Snippets validation
-	if len(remoteSnippetsData) > 0 {
-		var data map[string]interface{}
-
-		if err := json.Unmarshal(remoteSnippetsData, &data); err != nil {
-			log.Printf("[*] WARNING: Invalid snippets response: %v", remoteSnippetsData)
-			remoteSnippetsData = []byte{}
-		} else if v, ok := data["snippets"]; !ok {
-			log.Printf("[*] WARNING: Invalid snippets data: \"snippets\" field is missing")
-			remoteSnippetsData = []byte{}
-		} else if len(v.([]interface{})) == 0 {
-			// snippets response is valid but no snippets are configured
-			remoteSnippetsData = []byte{}
-		}
-	}
-
-	connect(casedServer, token)
+	return tk.(string), nil
 }
 
 func connect(host, token string) {
@@ -472,6 +508,7 @@ func connect(host, token string) {
 		}
 	}()
 
+	// remote stderr reader
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 
@@ -546,4 +583,14 @@ func openbrowser(url string) bool {
 	}
 
 	return true
+}
+
+func checkFields(data map[string]interface{}, fields ...string) error {
+	for _, field := range fields {
+		if _, ok := data[field]; !ok {
+			fmt.Errorf(`Invalid response: %q is missing`, field)
+		}
+	}
+
+	return nil
 }
