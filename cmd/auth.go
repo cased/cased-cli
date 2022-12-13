@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -203,7 +204,13 @@ func login(cmd *cobra.Command, args []string) {
 		log.Fatalf("[*] ERROR: Unable to generate code challenge: %v\n", err)
 	}
 
-	loginURL := fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
+	var loginURL string
+
+	if strings.HasPrefix(casedShell, "https://") {
+		loginURL = fmt.Sprintf("%s/%s", casedShell, loginAPI)
+	} else {
+		loginURL = fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
+	}
 
 	req, err := http.NewRequest("GET", loginURL, nil)
 
