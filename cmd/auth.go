@@ -50,6 +50,22 @@ type stdinReader struct {
 	lastInput []byte
 }
 
+// TestPrompt and TestAuth represent data loaded from integration test script.
+type TestPrompt struct {
+	Name     string // prompt name
+	Matches  string
+	Commands []struct {
+		Cmd      string // command to execute
+		Expected string // expected output
+	}
+}
+type TestAuth struct {
+	Prompts []TestPrompt
+}
+
+// TestAuthData stores integration test script data for testing the auth command.
+var TestAuthData TestAuth
+
 func (r *stdinReader) detach() {
 	r.detached.Store(true)
 	select {
@@ -374,6 +390,8 @@ func pollToken(pollURL, tokenURL, codeVerifier string) (string, error) {
 
 func connect(host, token string) {
 	var connectedToPrompt atomic.Bool
+	var testTimer *time.Timer
+	var testTimerExpired atomic.Bool
 
 	config := &ssh.ClientConfig{
 		User: "cased",
@@ -448,6 +466,10 @@ func connect(host, token string) {
 		log.Fatal(err.Error())
 	}
 
+	if testMode {
+		testTimer = time.NewTimer(2 * time.Second)
+	}
+
 	go func() {
 		handshake := []byte{0xde, 0xad, 0xbe, 0xef}
 		disconnectedHandshake := []byte{0xef, 0xbe, 0xad, 0xde}
@@ -467,6 +489,10 @@ func connect(host, token string) {
 				os.Exit(0)
 			}
 
+			if testMode && !testTimerExpired.Load() {
+				testTimer.Reset(2 * time.Second)
+			}
+
 			var hsBuffer []byte
 			if !connectedToPrompt.Load() {
 				hsBuffer = handshake
@@ -474,7 +500,7 @@ func connect(host, token string) {
 				hsBuffer = disconnectedHandshake
 			}
 
-			// debug(fmt.Sprintf("ssh (raw): len=%d, %v", n, data[:n]))
+			// debug(fmt.Sprintf("ssh (raw): len=%d, %v", n, string(data[:n])))
 			// look for handshake (connected to or disconnected from target prompt)
 			for i, b := range data[:n] {
 				if b == hsBuffer[hsPtr] {
@@ -544,6 +570,13 @@ func connect(host, token string) {
 				stdin.Write([]byte("/"))
 				stdin.Write(data)
 			}
+		} else if testMode {
+			select {
+			case <-testTimer.C:
+				testTimerExpired.Store(true)
+				integrationTest(stdin)
+				return
+			}
 		} else {
 			select {
 			case data, ok := <-sharedStdinReader.stdinChan:
@@ -588,9 +621,39 @@ func openbrowser(url string) bool {
 func checkFields(data map[string]interface{}, fields ...string) error {
 	for _, field := range fields {
 		if _, ok := data[field]; !ok {
-			fmt.Errorf(`Invalid response: %q is missing`, field)
+			return fmt.Errorf(`Invalid response: %q is missing`, field)
 		}
 	}
 
 	return nil
+}
+
+// sendTestCommands connect to the prompts specified in the integration test script,
+// then send the commands and check for expected results.
+func integrationTest(session io.WriteCloser) {
+	sendBytes := func(data []byte) {
+		n, err := session.Write(data)
+		if n != len(data) || err != nil {
+			log.Fatal("SSH write failed: ", err)
+		}
+	}
+	for _, prompt := range TestAuthData.Prompts {
+		sendBytes([]byte("/")) // Triggers list search (for Prompt)
+		time.Sleep(2 * time.Second)
+		sendBytes([]byte(prompt.Name)) // Look for a prompt matching this name.
+		time.Sleep(2 * time.Second)
+		sendBytes([]byte("\n")) // select Prompt
+		time.Sleep(2 * time.Second)
+		sendBytes([]byte("\r\n")) // send selection over SSH
+		time.Sleep(5 * time.Second)
+
+		for _, command := range prompt.Commands { // Send commands to the prompt.
+			sendBytes([]byte(command.Cmd))
+			sendBytes([]byte("\r\n"))
+			time.Sleep(time.Second)
+		}
+		session.Write([]byte("exit\n"))
+		time.Sleep(time.Second)
+		log.Println("Integration test results: success")
+	}
 }
