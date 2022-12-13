@@ -694,5 +694,22 @@ func fetchSnippets(server, token string) error {
 	}
 
 	remoteSnippetsData = body
+
+	// Snippets validation
+	if len(remoteSnippetsData) > 0 {
+		var data map[string]interface{}
+
+		if err := json.Unmarshal(remoteSnippetsData, &data); err != nil {
+			log.Printf("[*] WARNING: Invalid snippets response: %v", remoteSnippetsData)
+			remoteSnippetsData = []byte{}
+		} else if v, ok := data["snippets"]; !ok {
+			log.Printf("[*] WARNING: Invalid snippets data: \"snippets\" field is missing")
+			remoteSnippetsData = []byte{}
+		} else if len(v.([]interface{})) == 0 {
+			// snippets response is valid but no snippets are configured
+			remoteSnippetsData = []byte{}
+		}
+	}
+
 	return nil
 }

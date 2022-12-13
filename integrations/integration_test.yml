@@ -1,0 +1,8 @@
+prompts:
+  - name: demo-bastion
+    matches: "demo-bastion"
+    commands:      
+      - cmd: "id -un"
+        expected: "app"
+      - cmd: "who | wc -l"
+        expected: "1"
