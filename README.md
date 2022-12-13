@@ -20,11 +20,6 @@
 
 ## Installation
 
-### Cased GitHub codespaces
-
-
-To get `cased-cli` installed in a codespace enviroment, just run the following command: `GOPRIVATE=github.com go install github.com/cased/cased-cli@latest`
-
 ### Linux, MacOS and WSL systems
 
 `cased-cli` can be installed using the `go` tool, but since `cased-cli` is currently in a GitHub private repository, the following steps are required to get it properly installed:
@@ -54,6 +49,10 @@ Finally, run the following command to get `cased-cli` installed on your local ma
 2. Build the program:  
     - `cd cased-cli`
     - `go build`
+
+### Working on cased-cli using GitHub codespaces
+
+To get `cased-cli` installed in a codespace enviroment, just run the following command: `GOPRIVATE=github.com go install github.com/cased/cased-cli@latest`
 
 ## Usage
 
