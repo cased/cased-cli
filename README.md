@@ -116,7 +116,7 @@ $ ./cased-cli auth <domain>
     <img src="https://github.com/cased/cased-cli/blob/main/images/snippets_1.png" alt="Snippets Menu">
   </p>
 - The snippets are organized in categories, each category has its own tab.
-- To navigate between snippet categories use the left anf right arrows in the keyboard.
+- To navigate between snippet categories use the left and right arrows in the keyboard.
 - To search for a snippet press the '/' key, pressing \<ESC\> will get back to the previous screen.
 - Pressing 'q' will exit the snippets screen and get user back to the shell.
 - Press UP/Down keys to navigate between snippets in the current selected tab/category.
