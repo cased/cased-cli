@@ -2,7 +2,7 @@
 
 ## About
 
-* cased-cli is an open source SSH client that brings the power of Cased to everyone's local terminal
+**cased-cli** is an open source SSH client that brings the power of Cased to everyone's local terminal.
 
 ## Table of contents
 
