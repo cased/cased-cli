@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -218,17 +219,35 @@ func login(cmd *cobra.Command, args []string) {
 	client := http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: fetching auth URL from cased-shell: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[*] ERROR: fetching auth URL: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
 	var data map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&data)
+	var respCopy []byte
+	if os.Getenv("DEBUG") == "trace" {
+		// keep a copy of response for dumping it on errors.
+		respCopy, err = ioutil.ReadAll(resp.Body)
+		if err == nil {
+			err = json.Unmarshal(respCopy, &data)
+		}
+	} else {
+		err = json.NewDecoder(resp.Body).Decode(&data)
+	}
 	if err != nil {
+		log.Printf("[*] ERROR: Unable to authenticate: domain=%s\n", casedShell)
 		log.Printf("HTTP response status: %d/%s\n", resp.StatusCode, resp.Status)
 		if resp.StatusCode == http.StatusOK {
-			log.Printf("Unable to parse response: %v\n", err)
+			log.Println("Unexpected response format")
+			if os.Getenv("DEBUG") == "trace" {
+				dumpFile, err := os.CreateTemp(".", "resp_*.tmp")
+				if err == nil {
+					defer dumpFile.Close()
+					dumpFile.Write(respCopy)
+				}
+				log.Printf("Trace mode enabled, HTTP response can be checked on file %q\n", dumpFile.Name())
+			}
 		}
 		os.Exit(1)
 	}
