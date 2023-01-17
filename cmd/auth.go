@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -250,29 +252,36 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	loginArgs.Add("code_challenge_method", "S256")
 	req.URL.RawQuery = loginArgs.Encode()
 
-	// start a web server listening on the address specified by redirectURL
-	server := &http.Server{Addr: redirectURL}
+	// Create a http server to wait for the authentication callback
+	server := &http.Server{}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		// stop the server after handling the first request
-		defer stop(server)
+		defer wg.Done()
 
 		// parse the response from the authorization server
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
 		if code == "" || state == "" || state != stateUUID.String() {
-			log.Fatal("[*] ERROR: Unable to parse response from authorization server")
+			log.Println("[*] ERROR: Unable to parse response from authorization server")
+			return
 		}
 
 		// exchange the code and the verifier for an access token
-		var err error
 		token, err = exchangeCodeForToken(issuer, clientID, codeVerifier, code, redirectURL)
 		if err != nil {
-			log.Fatalf("[*] ERROR: Unable to exchange code for token: %v\n", err)
+			log.Printf("[*] ERROR: Unable to exchange code for token: %v\n", err)
+			return
 		}
 
 		// tell the caller we're good
 		fmt.Fprintf(w, "Authentication successful. You can close this window.\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 	})
 
 	// extract the port number from the redirectURL
@@ -288,17 +297,31 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 		log.Fatalf("[*] ERROR: Unable to listen on port %s: %v\n", port, err)
 	}
 
+	// start the server in a separate goroutine
+	go server.Serve(listener)
+
 	if !openbrowser(req.URL.String()) {
 		fmt.Println("Please access the URL below in order to proceed with the authentication:")
 		fmt.Println(req.URL.String())
 	}
 
-	// start the server
-	server.Serve(listener)
+	// Wait for auth callback handler
+	wg.Wait()
+
+	// Stop the server in a background goroutine
+	go func() {
+		// Wait a little delay to ensure that client has receive an answer.
+		select {
+		case <-time.After(3 * time.Second):
+			stop(server)
+		}
+	}()
 }
 
 func stop(server *http.Server) {
-	server.Close()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer func() { cancel() }()
+	server.Shutdown(shutdownCtx)
 }
 
 // exchangeCodeForToken trades the authorization code for an access token
