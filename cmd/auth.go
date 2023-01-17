@@ -222,7 +222,12 @@ func login(cmd *cobra.Command, args []string) {
 	if err := fetchSnippets(casedHTTPServer, token); err != nil {
 		log.Fatalln("[*] ERROR: Unable to fetch snippets: ", err)
 	}
-	connect(metaData["cased_server"], token)
+
+	if casedServer != "" {
+		connect(casedServer, token)
+	} else {
+		connect(metaData["cased_server"], token)
+	}
 }
 
 // AuthorizeUser implements the PKCE OAuth2 flow.
