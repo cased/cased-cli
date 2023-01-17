@@ -260,6 +260,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	// Create a http server to wait for the authentication callback
 	server := &http.Server{}
 
+	var tokenExchangeError error
 	var wg sync.WaitGroup
 	wg.Add(1)
 
@@ -271,22 +272,21 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
 		if code == "" || state == "" || state != stateUUID.String() {
-			log.Println("[*] ERROR: Unable to parse response from authorization server")
+			tokenExchangeError = errors.New("Authentication failed, invalid code/state.")
+			sendResponse(w, tokenExchangeError.Error())
 			return
 		}
 
 		// exchange the code and the verifier for an access token
 		token, err = exchangeCodeForToken(issuer, clientID, codeVerifier, code, redirectURL)
 		if err != nil {
-			log.Printf("[*] ERROR: Unable to exchange code for token: %v\n", err)
+			tokenExchangeError = fmt.Errorf("Unable to exchange code for token: %v", err)
+			sendResponse(w, tokenExchangeError.Error())
 			return
 		}
 
 		// tell the caller we're good
-		fmt.Fprintf(w, "Authentication successful. You can close this window.\n")
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
+		sendResponse(w, "Authentication successful. You can close this window.\n")
 	})
 
 	// extract the port number from the redirectURL
@@ -313,6 +313,16 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	// Wait for auth callback handler
 	wg.Wait()
 
+	// Exit if failed to exchange code for token.
+	if tokenExchangeError != nil {
+		log.Println("[ERROR]: ", tokenExchangeError)
+		select {
+		case <-time.After(1 * time.Second):
+			stop(server)
+			os.Exit(1)
+		}
+	}
+
 	// Stop the server in a background goroutine
 	go func() {
 		// Wait a little delay to ensure that client has receive an answer.
@@ -321,6 +331,13 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 			stop(server)
 		}
 	}()
+}
+
+func sendResponse(w http.ResponseWriter, message string) {
+	fmt.Fprint(w, message)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func stop(server *http.Server) {
