@@ -134,6 +134,7 @@ var (
 	debugFile    *os.File
 	debugWritter *bufio.Writer
 	debug        func(string)
+	stateUUID    uuid.UUID
 )
 
 func debugImpl(msg string) {
@@ -154,6 +155,7 @@ func init() {
 			debug = debugImpl
 		}
 	}
+	stateUUID = uuid.New()
 
 	rootCmd.AddCommand(authCmd)
 }
@@ -235,7 +237,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	loginArgs.Add("audience", issuer)
 	loginArgs.Add("scope", "openid offline_access profile email")
 	loginArgs.Add("response_type", "code")
-	loginArgs.Add("state", uuid.New().String())
+	loginArgs.Add("state", stateUUID.String())
 	loginArgs.Add("client_id", clientID)
 	loginArgs.Add("redirect_uri", redirectURL)
 	loginArgs.Add("code_challenge", codeChallenge)
@@ -249,7 +251,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 		// parse the response from the authorization server
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
-		if code == "" || state == "" {
+		if code == "" || state == "" || state != stateUUID.String() {
 			log.Fatalf("[*] ERROR: Unable to parse response from authorization server")
 			stop(server)
 		}
