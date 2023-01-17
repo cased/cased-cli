@@ -21,8 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,13 +36,15 @@ import (
 	"github.com/matthewhartstonge/pkce"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
+    "github.com/google/uuid"
 )
 
 var browserCmd *exec.Cmd
+var token string
 
 const (
-	loginAPI            = "v2/api/auth"
 	snippetsTriggerTime = 500 * time.Millisecond
+	clientID            = "cased-cli"
 )
 
 type stdinReader struct {
@@ -192,7 +194,29 @@ func login(cmd *cobra.Command, args []string) {
 	} else {
 		log.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 	}
+	var issuer string
 
+	if strings.HasPrefix(casedShell, "https://") {
+		issuer = fmt.Sprintf("%s/idp", casedShell)
+
+	} else {
+		issuer = fmt.Sprintf("https://%s/idp", casedShell)
+	}
+
+	AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/")
+
+	log.Println("Authentication successful")
+	log.Println("Fetching remote data...")
+
+	if err := fetchSnippets(casedHTTPServer, token); err != nil {
+		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
+	}
+
+	connect(casedServer, token)
+}
+
+// AuthorizeUser implements the PKCE OAuth2 flow.
+func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
 	if err != nil {
@@ -204,214 +228,95 @@ func login(cmd *cobra.Command, args []string) {
 		log.Fatalf("[*] ERROR: Unable to generate code challenge: %v\n", err)
 	}
 
-	var loginURL string
-
-	if strings.HasPrefix(casedShell, "https://") {
-		loginURL = fmt.Sprintf("%s/%s", casedShell, loginAPI)
-	} else {
-		loginURL = fmt.Sprintf("https://%s/%s", casedShell, loginAPI)
-	}
-
-	req, err := http.NewRequest("GET", loginURL, nil)
-
-	// If cased-cli is running in test mode, skip authentication.
-	if testMode {
-		req.Header.Add("X-SKIP-AUTH", "true")
-	}
+	// setup a request to the auth endpoint
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/auth", issuer), nil)
 
 	loginArgs := url.Values{}
-	loginArgs.Add("cc", codeChallenge)
+	loginArgs.Add("audience", issuer)
+	loginArgs.Add("scope", "openid offline_access profile email")
+	loginArgs.Add("response_type", "code")
+	loginArgs.Add("state", uuid.New().String())
+	loginArgs.Add("client_id", clientID)
+	loginArgs.Add("redirect_uri", redirectURL)
+	loginArgs.Add("code_challenge", codeChallenge)
+	loginArgs.Add("code_challenge_method", "S256")
 	req.URL.RawQuery = loginArgs.Encode()
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	// start a web server listening on the address specified by redirectURL
+	server := &http.Server{Addr: redirectURL}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// parse the response from the authorization server
+		code := r.URL.Query().Get("code")
+		state := r.URL.Query().Get("state")
+		if code == "" || state == "" {
+			log.Fatalf("[*] ERROR: Unable to parse response from authorization server")
+			stop(server)
+		}
+
+		// exchange the code and the verifier for an access token
+		var err error
+		token, err = exchangeCodeForToken(issuer, clientID, codeVerifier, code, redirectURL)
+		if err != nil {
+			log.Fatalf("[*] ERROR: Unable to exchange code for token: %v\n", err)
+			stop(server)
+		}
+
+		// tell the caller we're good
+		fmt.Fprintf(w, "Authentication successful. You can close this window.\n")
+		stop(server)
+	})
+
+	// extract the port number from the redirectURL
+	u, err := url.Parse(redirectURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: fetching auth URL: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("[*] ERROR: Unable to parse redirect URL: %v\n", err)
+	}
+	port := u.Port()
+
+	// listen on that port
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	if err != nil {
+		log.Fatalf("[*] ERROR: Unable to listen on port %s: %v\n", port, err)
+	}
+
+	if !openbrowser(req.URL.String()) {
+		fmt.Println("Please access the URL below in order to proceed with the authentication:")
+		fmt.Println(req.URL.String())
+	}
+
+	// start the server
+	server.Serve(listener)
+}
+
+func stop(server *http.Server) {
+	go server.Close()
+}
+
+// exchangeCodeForToken trades the authorization code for an access token
+func exchangeCodeForToken(issuer string, clientID string, codeVerifier string, authorizationCode string, redirectURL string) (string, error) {
+	// build the request body
+	body := url.Values{}
+	body.Add("grant_type", "authorization_code")
+	body.Add("client_id", clientID)
+	body.Add("code_verifier", codeVerifier)
+	body.Add("code", authorizationCode)
+	body.Add("redirect_uri", redirectURL)
+
+	// send the request
+	resp, err := http.PostForm(fmt.Sprintf("%s/token", issuer), body)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
+	// extract into a map
 	var data map[string]interface{}
-	var respCopy []byte
-	if os.Getenv("DEBUG") == "trace" {
-		// keep a copy of response for dumping it on errors.
-		respCopy, err = ioutil.ReadAll(resp.Body)
-		if err == nil {
-			err = json.Unmarshal(respCopy, &data)
-		}
-	} else {
-		err = json.NewDecoder(resp.Body).Decode(&data)
-	}
-	if err != nil {
-		log.Printf("[*] ERROR: Unable to authenticate: domain=%s\n", casedShell)
-		log.Printf("HTTP response status: %d/%s\n", resp.StatusCode, resp.Status)
-		if resp.StatusCode == http.StatusOK {
-			log.Println("Unexpected response format")
-			if os.Getenv("DEBUG") == "trace" {
-				dumpFile, err := os.CreateTemp(".", "resp_*.tmp")
-				if err == nil {
-					defer dumpFile.Close()
-					dumpFile.Write(respCopy)
-				}
-				log.Printf("Trace mode enabled, HTTP response can be checked on file %q\n", dumpFile.Name())
-			}
-		}
-		os.Exit(1)
-	}
-
-	token, err := getToken(data, codeVerifier)
-	if err != nil {
-		log.Fatal("[*] ERROR: ", err)
-	}
-
-	log.Println("Authentication successful")
-	log.Println("Fetching remote data...")
-
-	if err = fetchSnippets(casedHTTPServer, token); err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
-	}
-
-	connect(casedServer, token)
-}
-
-// getToken parses the response from cased-shell then attempts to launch a web browser
-// which directs the user to the login page (auth_url).
-// When running integration tests, the token is directly sent by cased-shell in the initial response.
-func getToken(data map[string]interface{}, codeVerifier string) (string, error) {
-	// In test mode the first cased-shell response must contain a valid token.
-	// The response is in the format: {"token": "value", "status": "ok|error", "cased_server": "address:port"}
-	if testMode {
-		if err := checkFields(data, "status", "token"); err != nil {
-			return "", fmt.Errorf(`%s (integration test)`, err)
-		}
-
-		if data["status"].(string) != "ok" {
-			return "", errors.New("Internal server error (integration test)")
-		}
-
-		if data["token"].(string) == "" {
-			return "", errors.New(`Invalid response: "token" is empty (integration test)`)
-		}
-
-		if casedServer == "" {
-			// CASED_SERVER env was not provided, it must be retrieved from cased-shell
-			// along with the token.
-			srv, ok := data["cased_server"]
-			if !ok {
-				return "", errors.New(`Invalid response: "cased_server" is missing`)
-			}
-			casedServer = srv.(string)
-		}
-
-		return data["token"].(string), nil
-	}
-
-	if err := checkFields(data, "auth_url", "poll_url", "token_url"); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return "", err
 	}
 
-	authURL := data["auth_url"].(string)
-	pollURL := data["poll_url"].(string)
-	tokenURL := data["token_url"].(string)
-
-	if !openbrowser(authURL) {
-		fmt.Println("Please access the URL below in order to proceed with the authentication:")
-		fmt.Println(authURL)
-	}
-
-	fmt.Print("Waiting for authentication...")
-
-	token, err := pollToken(pollURL, tokenURL, codeVerifier)
-	if err != nil {
-		return "", err
-	}
-
-	return token, nil
-}
-
-// pollToken polls the poll_url sent by cased-shell in order to get an
-// authorization code (available after user authentication in the web browser).
-// Then, it attempts to get a token from token_url using the generated codeVerifier/
-// authentication_code provided.
-// More about the authorization flow on: https://www.oauth.com/oauth2-servers/device-flow/
-func pollToken(pollURL, tokenURL, codeVerifier string) (string, error) {
-	var authCode string
-
-	// Start polling after some delay (web browser opening, user filling in credentials, etc...)
-	time.Sleep(5 * time.Second)
-
-	// try to get token every 3 secs
-	const TryInterval = 3 * time.Second
-	const MaxTries = 30
-
-	// Poll the API for authorization_code.
-	for i := 0; i < MaxTries; i++ {
-		resp, err := http.Get(pollURL)
-		if err != nil {
-			return "", fmt.Errorf("Unable to get authorization code (poll URL): %v", err)
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			var data map[string]interface{}
-			err = json.NewDecoder(resp.Body).Decode(&data)
-			if err != nil {
-				return "", fmt.Errorf("Invalid response (poll URL): %v", err)
-			}
-
-			ac, ok := data["authorization_code"]
-			if !ok {
-				return "", errors.New(`Invalid response: "authorization_code" is missing`)
-			}
-
-			authCode = ac.(string)
-
-			break
-		}
-
-		fmt.Print(".")
-		time.Sleep(TryInterval)
-	}
-
-	if authCode == "" {
-		return "", errors.New("Authentication timed out, exiting...")
-	}
-
-	req, err := http.NewRequest("GET", tokenURL, nil)
-
-	tokenArgs := url.Values{}
-	tokenArgs.Add("authorization_code", authCode)
-	tokenArgs.Add("cc", codeVerifier)
-	req.URL.RawQuery = tokenArgs.Encode()
-
-	client := http.Client{}
-	respToken, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("Failed to fetch token_url (%d/%s): %v", respToken.StatusCode, respToken.Status, err)
-	}
-	defer respToken.Body.Close()
-
-	var data map[string]interface{}
-	err = json.NewDecoder(respToken.Body).Decode(&data)
-	if err != nil {
-		return "", fmt.Errorf("Unable to parse response (token_url): %v", err)
-	}
-
-	tk, ok := data["token"]
-	if !ok {
-		return "", errors.New(`Invalid response (token_url): "token" is missing`)
-	}
-
-	if casedServer == "" {
-		// CASED_SERVER env was not provided, it must be retrieved from cased-shell
-		// along with the token.
-		srv, ok := data["cased_server"]
-		if !ok {
-			return "", errors.New(`Invalid response (token_url): "cased_server" is missing`)
-		}
-		casedServer = srv.(string)
-	}
-
-	return tk.(string), nil
+	return data["access_token"].(string), nil
 }
 
 func connect(host, token string) {
