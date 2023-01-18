@@ -254,12 +254,14 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	server := &http.Server{Addr: redirectURL}
 
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		// stop the server after handling the first request
+		defer stop(server)
+
 		// parse the response from the authorization server
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
 		if code == "" || state == "" || state != stateUUID.String() {
-			log.Fatalf("[*] ERROR: Unable to parse response from authorization server")
-			stop(server)
+			log.Fatal("[*] ERROR: Unable to parse response from authorization server")
 		}
 
 		// exchange the code and the verifier for an access token
@@ -267,12 +269,10 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 		token, err = exchangeCodeForToken(issuer, clientID, codeVerifier, code, redirectURL)
 		if err != nil {
 			log.Fatalf("[*] ERROR: Unable to exchange code for token: %v\n", err)
-			stop(server)
 		}
 
 		// tell the caller we're good
 		fmt.Fprintf(w, "Authentication successful. You can close this window.\n")
-		stop(server)
 	})
 
 	// extract the port number from the redirectURL
@@ -298,7 +298,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 }
 
 func stop(server *http.Server) {
-	go server.Close()
+	server.Close()
 }
 
 // exchangeCodeForToken trades the authorization code for an access token
