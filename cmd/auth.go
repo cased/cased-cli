@@ -33,10 +33,10 @@ import (
 	"time"
 
 	"github.com/containerd/console"
+	"github.com/google/uuid"
 	"github.com/matthewhartstonge/pkce"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
-    "github.com/google/uuid"
 )
 
 var browserCmd *exec.Cmd
@@ -197,24 +197,30 @@ func login(cmd *cobra.Command, args []string) {
 		log.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 	}
 	var issuer string
+	var metaDataURL string
 
 	if strings.HasPrefix(casedShell, "https://") {
 		issuer = fmt.Sprintf("%s/idp", casedShell)
-
+		metaDataURL = fmt.Sprintf("%s", casedShell)
 	} else {
 		issuer = fmt.Sprintf("https://%s/idp", casedShell)
+		metaDataURL = fmt.Sprintf("https://%s", casedShell)
 	}
 
-	AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/")
+	AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/callback")
 
 	log.Println("Authentication successful")
 	log.Println("Fetching remote data...")
 
-	if err := fetchSnippets(casedHTTPServer, token); err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch remote data: ", err)
+	metaData, err := getMetaData(metaDataURL, token)
+	if err != nil {
+		log.Fatalln("[*] ERROR: Unable to fetch metadata: ", err)
 	}
 
-	connect(casedServer, token)
+	if err := fetchSnippets(casedHTTPServer, token); err != nil {
+		log.Fatalln("[*] ERROR: Unable to fetch snippets: ", err)
+	}
+	connect(metaData["cased_server"], token)
 }
 
 // AuthorizeUser implements the PKCE OAuth2 flow.
@@ -247,7 +253,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	// start a web server listening on the address specified by redirectURL
 	server := &http.Server{Addr: redirectURL}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		// parse the response from the authorization server
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
