@@ -298,7 +298,8 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 }
 
 func stop(server *http.Server) {
-	server.Close()
+	// run in a goroutine so that the request being served by the server completes
+	go server.Close()
 }
 
 // exchangeCodeForToken trades the authorization code for an access token
