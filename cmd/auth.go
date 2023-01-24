@@ -569,7 +569,7 @@ func connect(host, token string) {
 				}
 				if data[0] == '/' &&
 					len(data) == 1 &&
-					len(remoteSnippetsData) > 0 &&
+					fetchedSnippets != nil &&
 					connectedToPrompt.Load() {
 					timerIsOn = true
 					timer = time.NewTimer(snippetsTriggerTime)

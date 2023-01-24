@@ -173,8 +173,7 @@ const demoSnippetsData = `
 }
 `
 
-var remoteSnippetsData []byte
-var fetchedSnippets snippets
+var fetchedSnippets *snippets = &snippets{}
 
 var selectedSnippet string
 
@@ -188,11 +187,16 @@ var snippetsCmd = &cobra.Command{
 
 var logFile *os.File
 
+// When invoking `$ cased-cli snippets` show some demo snippets.
+// Useful for development/testing.
 func showSnippets(cmd *cobra.Command, args []string) {
-	fmt.Println(showSnippetsImpl(nil, []byte(demoSnippetsData)))
+	if err := json.Unmarshal([]byte(demoSnippetsData), fetchedSnippets); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(showSnippetsImpl(nil))
 }
 
-func showSnippetsImpl(reader io.Reader, snippetData []byte) string {
+func showSnippetsImpl(reader io.Reader) string {
 	selectedSnippet = ""
 	term := console.Current()
 	termSize, _ := term.Size()
@@ -214,11 +218,6 @@ func showSnippetsImpl(reader io.Reader, snippetData []byte) string {
 	}
 	if termSize.Height > 0 {
 		termHeight = int(termSize.Height)
-	}
-
-	if err := json.Unmarshal(snippetData, &fetchedSnippets); err != nil {
-		fmt.Fprintf(os.Stderr, "parsing demo snippets: %v\n", err)
-		os.Exit(1)
 	}
 
 	m := model{tabs: fetchedSnippets.Categories, selectedCategory: -1}
@@ -267,11 +266,11 @@ func showSnippetsImpl(reader io.Reader, snippetData []byte) string {
 }
 
 func ShowSnippets() string {
-	return showSnippetsImpl(nil, remoteSnippetsData)
+	return showSnippetsImpl(nil)
 }
 
 func ShowSnippetsWithReader(r io.Reader) string {
-	return showSnippetsImpl(r, remoteSnippetsData)
+	return showSnippetsImpl(r)
 }
 
 func (m model) Init() tea.Cmd {
@@ -693,21 +692,11 @@ func fetchSnippets(server, token string) error {
 		return err
 	}
 
-	remoteSnippetsData = body
-
-	// Snippets validation
-	if len(remoteSnippetsData) > 0 {
-		var data map[string]interface{}
-
-		if err := json.Unmarshal(remoteSnippetsData, &data); err != nil {
-			log.Printf("[*] WARNING: Invalid snippets response: %v", remoteSnippetsData)
-			remoteSnippetsData = []byte{}
-		} else if v, ok := data["snippets"]; !ok {
-			log.Printf("[*] WARNING: Invalid snippets data: \"snippets\" field is missing")
-			remoteSnippetsData = []byte{}
-		} else if len(v.([]interface{})) == 0 {
-			// snippets response is valid but no snippets are configured
-			remoteSnippetsData = []byte{}
+	// Check if we got valid snippets in the response.
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, fetchedSnippets); err != nil {
+			fetchedSnippets = nil
+			log.Printf("[*] WARNING: Invalid snippets response: %v", err)
 		}
 	}
 
