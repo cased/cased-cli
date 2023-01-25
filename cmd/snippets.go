@@ -1,18 +1,16 @@
 package cmd
 
 import (
-	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
 
+	"github.com/cased/cased-cli/cased"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -654,40 +652,12 @@ func (m *model) back() {
 	m.currentScreen = snippetScreen
 }
 
+// fetchSnippets fetches snippets from the cased-shell instance located
+// at server.
 func fetchSnippets(server, token string) error {
 	const endpoint = "/snippets"
-	apiURL := fmt.Sprintf("%s%s", server, endpoint)
 
-	var err error
-	var req *http.Request
-
-	if os.Getenv("TLS_SKIP_VERIFY") == "true" {
-		// Disable TLS verification
-		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
-
-	req, err = http.NewRequest("GET", apiURL, nil)
-
-	if err != nil {
-		return err
-	}
-
-	// Token based authentication
-	req.Header.Add("Authorization", "Bearer "+token)
-
-	client := http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
-		return errors.New("HTTP Error: " + resp.Status)
-	}
-
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := cased.Get(server, endpoint, token)
 	if err != nil {
 		return err
 	}
@@ -695,6 +665,7 @@ func fetchSnippets(server, token string) error {
 	// Check if we got valid snippets in the response.
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, fetchedSnippets); err != nil {
+			// Set fetchedSnippets to nil so we know there are no snippets available.
 			fetchedSnippets = nil
 			log.Printf("[*] WARNING: Invalid snippets response: %v", err)
 		}
