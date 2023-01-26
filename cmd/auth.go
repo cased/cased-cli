@@ -41,9 +41,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var browserCmd *exec.Cmd
-var token string
-
 const (
 	snippetsTriggerTime = 500 * time.Millisecond
 	clientID            = "cased-cli"
@@ -209,7 +206,10 @@ func login(cmd *cobra.Command, args []string) {
 		metaDataURL = fmt.Sprintf("https://%s", casedShell)
 	}
 
-	AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/callback")
+	token, err := AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/callback")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Println("Authentication successful")
 	log.Println("Fetching remote data...")
@@ -231,20 +231,26 @@ func login(cmd *cobra.Command, args []string) {
 }
 
 // AuthorizeUser implements the PKCE OAuth2 flow.
-func AuthorizeUser(clientID string, issuer string, redirectURL string) {
+// If authentication succeeds, the token is return to the caller as string.
+func AuthorizeUser(clientID string, issuer string, redirectURL string) (string, error) {
+	var token string
+
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to generate code verifier: %v\n", err)
+		return "", fmt.Errorf("[*] ERROR: Unable to generate code verifier: %v\n", err)
 	}
 
 	codeChallenge, err := pkce.GenerateCodeChallenge(pkce.S256, codeVerifier)
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to generate code challenge: %v\n", err)
+		return "", fmt.Errorf("[*] ERROR: Unable to generate code challenge: %v\n", err)
 	}
 
 	// setup a request to the auth endpoint
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/auth", issuer), nil)
+	if err != nil {
+		return "", err
+	}
 
 	loginArgs := url.Values{}
 	loginArgs.Add("audience", issuer)
@@ -292,14 +298,14 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	// extract the port number from the redirectURL
 	u, err := url.Parse(redirectURL)
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to parse redirect URL: %v\n", err)
+		return "", fmt.Errorf("[*] ERROR: Unable to parse redirect URL: %v\n", err)
 	}
 	port := u.Port()
 
 	// listen on that port
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to listen on port %s: %v\n", port, err)
+		return "", fmt.Errorf("[*] ERROR: Unable to listen on port %s: %v\n", port, err)
 	}
 
 	// start the server in a separate goroutine
@@ -331,6 +337,8 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 			stop(server)
 		}
 	}()
+
+	return token, nil
 }
 
 func sendResponse(w http.ResponseWriter, message string) {
@@ -582,6 +590,8 @@ func connect(host, token string) {
 }
 
 func openbrowser(url string) bool {
+	var browserCmd *exec.Cmd
+
 	switch runtime.GOOS {
 	case "linux":
 		browserCmd = exec.Command("xdg-open", url)
