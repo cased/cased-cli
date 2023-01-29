@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/cased/cased-cli/integration"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 )
@@ -26,7 +27,6 @@ var testCmd = &cobra.Command{
 
 func init() {
 	testCmd.Flags().StringVarP(&scriptFile, "script", "s", "", "Script file for integration tests")
-	log.Default()
 	rootCmd.AddCommand(testCmd)
 }
 
@@ -62,7 +62,7 @@ func loadTestScript(command string) {
 
 	switch command {
 	case "auth":
-		err = yaml.Unmarshal(data, &TestAuthData)
+		err = yaml.Unmarshal(data, &integration.TestAuthData)
 		if err != nil {
 			log.Fatalf("Invalid script syntax\nCommand: %s\nScript: %s\nError: %v\n",
 				command, scriptFile, err)

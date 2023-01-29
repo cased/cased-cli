@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cased/cased-cli/integration"
 	"github.com/containerd/console"
 	"github.com/google/uuid"
 	"github.com/matthewhartstonge/pkce"
@@ -41,37 +42,44 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// cased-cli constant settings
 const (
 	snippetsTriggerTime = 500 * time.Millisecond
-	clientID            = "cased-cli"
+	clientID            = "cased-cli" // OAUTH/dex "client_id"
 )
 
+// stdinReader wraps reads from stdin.
+// It implements the io.Reader interface: https://pkg.go.dev/io#Reader,
+// which allows us to provide it as the input reader for bubbletea:
+// e.g tea.NewProgram(m, tea.WithInput(stdinReader{})
+//
+// At any given time, cased-cli can be running in one of two modes:
+//
+//	1: bubble tea mode: In this mode, we say we are "detached" from stdin,
+//	   all input is read and processed first by the bubbletea library.
+//
+//	2: normal mode: In this mode, cased-cli consumes stdin input normally.
+//
+// The reason we want to control the input is that when switching from
+// bubbletea mode to normal mode, bubbletea may have "swallowed" the input,
+// giving the impression that the keystroke was ignored by the app.
+// If that happens, we send this "swallowed" data (lastInput) to
+// cased-cli again so we don't lose it.
 type stdinReader struct {
-	detached  atomic.Bool
-	stdinChan chan []byte
-	reader    *bufio.Reader
+	detached  atomic.Bool   // if detached, stdin input is being consumed by bubbletea.
+	stdinChan chan []byte   // Send all data read from stdin to this channel.
+	reader    *bufio.Reader // Read from stdin using a buffered reader, which allows to "unread" input.
+	// keep last input read, when we switch from bubbletea to normal mode
+	// if there was any pending data read, we forward it to stdinChan channel.
+	// This allows cased-cli to not miss that input.
 	lastInput []byte
 }
 
-// TestPrompt and TestAuth represent data loaded from integration test script.
-type TestPrompt struct {
-	Name     string // prompt name
-	Matches  string
-	Commands []struct {
-		Cmd      string // command to execute
-		Expected string // expected output
-	}
-}
-type TestAuth struct {
-	Prompts []TestPrompt
-}
-
-// TestAuthData stores integration test script data for testing the auth command.
-var TestAuthData TestAuth
-
+// detach switches input mode from normal to bubbletea.
 func (r *stdinReader) detach() {
 	r.detached.Store(true)
 	select {
+	// stdin input not consumed by cased-cli, forward it to bubbletea.
 	case <-r.stdinChan:
 		r.reader.UnreadByte()
 	default:
@@ -79,6 +87,7 @@ func (r *stdinReader) detach() {
 	}
 }
 
+// attach switches input mode from bubbletea to normal
 func (r *stdinReader) attach() {
 	// Send last input read from bubbletea back to our app
 	r.detached.Store(false)
@@ -90,11 +99,14 @@ func (r *stdinReader) isDetached() bool {
 	return r.detached.Load()
 }
 
+// A shared stdin reader between cased-cli and bubbletea
+// Both get input data from stdinChan channel.
 var sharedStdinReader stdinReader = stdinReader{
 	reader:    bufio.NewReader(os.Stdin),
 	stdinChan: make(chan []byte),
 }
 
+// readLoop forward data read from stdin to the stdinReader channel.
 func (r *stdinReader) readLoop() {
 	var buffer [32]byte
 	for {
@@ -107,7 +119,10 @@ func (r *stdinReader) readLoop() {
 		// When we close the bubbletea app (snippets), send the last
 		// input back to our app so we don't lose it.
 		if r.detached.Load() {
-			r.lastInput = make([]byte, n)
+			// cap on nil slice == 0
+			if cap(r.lastInput) < n {
+				r.lastInput = make([]byte, n)
+			}
 			copy(r.lastInput, buffer[:n])
 		}
 		// debug(fmt.Sprintf("read: got %d bytes. is_detached=%v", n, r.detached.Load()))
@@ -122,9 +137,7 @@ func (r *stdinReader) Read(p []byte) (n int, err error) {
 		return 0, errors.New("stdin channel is closed")
 	}
 
-	copy(p, b)
-
-	return len(b), nil
+	return copy(p, b), nil
 }
 
 const debugFileName = "ssh.log"
@@ -427,16 +440,16 @@ func connect(host, token string) {
 	w := 40
 	h := 80
 
-	if ws, err := current.Size(); err == nil {
+	if ws, werr := current.Size(); werr == nil {
 		w = int(ws.Width)
 		h = int(ws.Height)
 	}
 
-	if err := session.RequestPty(term, h, w, modes); err != nil {
+	if err = session.RequestPty(term, h, w, modes); err != nil {
 		log.Fatal("Request for pseudo terminal failed: ", err)
 	}
 
-	if err := current.SetRaw(); err != nil {
+	if err = current.SetRaw(); err != nil {
 		log.Fatal("Unable to set terminal mode to raw:", err)
 	}
 
@@ -566,7 +579,7 @@ func connect(host, token string) {
 			select {
 			case <-testTimer.C:
 				testTimerExpired.Store(true)
-				integrationTest(stdin)
+				integration.RunTest(stdin)
 				return
 			}
 		} else {
@@ -620,34 +633,4 @@ func checkFields(data map[string]interface{}, fields ...string) error {
 	}
 
 	return nil
-}
-
-// sendTestCommands connect to the prompts specified in the integration test script,
-// then send the commands and check for expected results.
-func integrationTest(session io.WriteCloser) {
-	sendBytes := func(data []byte) {
-		n, err := session.Write(data)
-		if n != len(data) || err != nil {
-			log.Fatal("SSH write failed: ", err)
-		}
-	}
-	for _, prompt := range TestAuthData.Prompts {
-		sendBytes([]byte("/")) // Triggers list search (for Prompt)
-		time.Sleep(2 * time.Second)
-		sendBytes([]byte(prompt.Name)) // Look for a prompt matching this name.
-		time.Sleep(2 * time.Second)
-		sendBytes([]byte("\n")) // select Prompt
-		time.Sleep(2 * time.Second)
-		sendBytes([]byte("\r\n")) // send selection over SSH
-		time.Sleep(5 * time.Second)
-
-		for _, command := range prompt.Commands { // Send commands to the prompt.
-			sendBytes([]byte(command.Cmd))
-			sendBytes([]byte("\r\n"))
-			time.Sleep(time.Second)
-		}
-		session.Write([]byte("exit\n"))
-		time.Sleep(time.Second)
-		log.Println("Integration test results: success")
-	}
 }
