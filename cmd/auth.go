@@ -35,6 +35,7 @@ import (
 
 	"github.com/cased/cased-cli/cased"
 	"github.com/cased/cased-cli/integration"
+	"github.com/cased/cased-cli/iowrapper"
 	"github.com/containerd/console"
 	"github.com/google/uuid"
 	"github.com/matthewhartstonge/pkce"
@@ -74,101 +75,6 @@ func init() {
 	casedHTTPServer = os.Getenv("CASED_SERVER_API")
 
 	rootCmd.AddCommand(authCmd)
-}
-
-// stdinReader wraps reads from stdin.
-// It implements the io.Reader interface: https://pkg.go.dev/io#Reader,
-// which allows us to provide it as the input reader for bubbletea:
-// e.g tea.NewProgram(m, tea.WithInput(stdinReader{})
-//
-// At any given time, cased-cli can be running in one of two modes:
-//
-//	1: bubble tea mode: In this mode, we say we are "detached" from stdin,
-//	   all input is read and processed first by the bubbletea library.
-//
-//	2: normal mode: In this mode, cased-cli consumes stdin input normally.
-//
-// The reason we want to control the input is that when switching from
-// bubbletea mode to normal mode, bubbletea may have "swallowed" the input,
-// giving the impression that the keystroke was ignored by the app.
-// If that happens, we send this "swallowed" data (lastInput) to
-// cased-cli again so we don't lose it.
-type stdinReader struct {
-	detached  atomic.Bool   // if detached, stdin input is being consumed by bubbletea.
-	stdinChan chan []byte   // Send all data read from stdin to this channel.
-	reader    *bufio.Reader // Read from stdin using a buffered reader, which allows to "unread" input.
-	// keep last input read, when we switch from bubbletea to normal mode
-	// if there was any pending data read, we forward it to stdinChan channel.
-	// This allows cased-cli to not miss that input.
-	lastInput []byte
-}
-
-// detach switches input mode from normal to bubbletea.
-func (r *stdinReader) detach() {
-	r.detached.Store(true)
-	select {
-	// stdin input not consumed by cased-cli, forward it to bubbletea.
-	case <-r.stdinChan:
-		r.reader.UnreadByte()
-	default:
-		return
-	}
-}
-
-// attach switches input mode from bubbletea to normal
-func (r *stdinReader) attach() {
-	// Send last input read from bubbletea back to our app
-	r.detached.Store(false)
-	r.stdinChan <- r.lastInput
-	r.lastInput = nil
-}
-
-func (r *stdinReader) isDetached() bool {
-	return r.detached.Load()
-}
-
-// A shared stdin reader between cased-cli and bubbletea
-// Both get input data from stdinChan channel.
-var sharedStdinReader stdinReader = stdinReader{
-	reader:    bufio.NewReader(os.Stdin),
-	stdinChan: make(chan []byte),
-}
-
-// readLoop forward data read from stdin to the stdinReader channel.
-func (r *stdinReader) readLoop() {
-	var buffer [32]byte
-	for {
-		n, err := r.reader.Read(buffer[:])
-		if err != nil {
-			close(r.stdinChan)
-			return
-		}
-		// Keep last input read from bubbletea app
-		// When we close the bubbletea app (snippets), send the last
-		// input back to our app so we don't lose it.
-		if r.detached.Load() {
-			// cap on nil slice == 0
-			if cap(r.lastInput) < n {
-				r.lastInput = make([]byte, n)
-			}
-			copy(r.lastInput, buffer[:n])
-		}
-		fileLogger.Debug().
-			Int("bytes", n).
-			Bool("is_detached", r.detached.Load()).
-			Msg("read")
-		r.stdinChan <- buffer[:n]
-	}
-}
-
-func (r *stdinReader) Read(p []byte) (n int, err error) {
-	b, ok := <-r.stdinChan
-
-	if !ok {
-		return 0, errors.New("stdin channel is closed")
-	}
-
-	return copy(p, b), nil
 }
 
 func login(cmd *cobra.Command, args []string) {
@@ -532,20 +438,22 @@ func connect(host, token string) {
 	var timer *time.Timer
 	timerIsOn := false
 
-	go sharedStdinReader.readLoop()
+	sharedStdinReader := iowrapper.New(os.Stdin)
+
+	go sharedStdinReader.ReadLoop()
 
 	for {
 		if timerIsOn {
 			select {
 			case <-timer.C:
-				sharedStdinReader.detach() // give control of stdin to bubbletea
+				sharedStdinReader.Detach() // give control of stdin to bubbletea
 				timerIsOn = false
-				snippet := ShowSnippetsWithReader(&sharedStdinReader)
-				sharedStdinReader.attach()
+				snippet := ShowSnippetsWithReader(sharedStdinReader)
+				sharedStdinReader.Attach()
 				if snippet != "" {
 					stdin.Write([]byte(snippet))
 				}
-			case data, ok := <-sharedStdinReader.stdinChan:
+			case data, ok := <-sharedStdinReader.Ch:
 				if !ok {
 					return
 				}
@@ -563,7 +471,7 @@ func connect(host, token string) {
 			}
 		} else {
 			select {
-			case data, ok := <-sharedStdinReader.stdinChan:
+			case data, ok := <-sharedStdinReader.Ch:
 				if !ok {
 					return
 				}
