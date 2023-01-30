@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,6 +37,7 @@ import (
 	"github.com/containerd/console"
 	"github.com/google/uuid"
 	"github.com/matthewhartstonge/pkce"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 )
@@ -47,6 +47,16 @@ const (
 	snippetsTriggerTime = 500 * time.Millisecond
 	clientID            = "cased-cli" // OAUTH/dex "client_id"
 )
+
+var (
+	stateUUID uuid.UUID
+)
+
+func init() {
+	stateUUID = uuid.New()
+
+	rootCmd.AddCommand(authCmd)
+}
 
 // stdinReader wraps reads from stdin.
 // It implements the io.Reader interface: https://pkg.go.dev/io#Reader,
@@ -125,7 +135,10 @@ func (r *stdinReader) readLoop() {
 			}
 			copy(r.lastInput, buffer[:n])
 		}
-		// debug(fmt.Sprintf("read: got %d bytes. is_detached=%v", n, r.detached.Load()))
+		fileLogger.Debug().
+			Int("bytes", n).
+			Bool("is_detached", r.detached.Load()).
+			Msg("read")
 		r.stdinChan <- buffer[:n]
 	}
 }
@@ -138,38 +151,6 @@ func (r *stdinReader) Read(p []byte) (n int, err error) {
 	}
 
 	return copy(p, b), nil
-}
-
-const debugFileName = "ssh.log"
-
-var (
-	debugFile    *os.File
-	debugWritter *bufio.Writer
-	debug        func(string)
-	stateUUID    uuid.UUID
-)
-
-func debugImpl(msg string) {
-	debugWritter.WriteString(msg + "\n")
-	debugWritter.Flush()
-}
-
-func debugNull(msg string) {}
-
-func init() {
-	debug = debugNull
-
-	if len(os.Getenv("DEBUG")) > 0 {
-		var err error
-		debugFile, err = os.OpenFile(debugFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0744)
-		if err == nil {
-			debugWritter = bufio.NewWriter(debugFile)
-			debug = debugImpl
-		}
-	}
-	stateUUID = uuid.New()
-
-	rootCmd.AddCommand(authCmd)
 }
 
 // promptsCmd represents the prompts command
@@ -200,13 +181,13 @@ func login(cmd *cobra.Command, args []string) {
 	}
 
 	if casedServer != "" {
-		log.Printf("CASED_SERVER: %s\n", casedServer)
+		log.Info().Msgf("CASED_SERVER: %s", casedServer)
 	}
 
 	if casedHTTPServer == "" {
 		casedHTTPServer = fmt.Sprintf("https://%s/cased-server", casedShell)
 	} else {
-		log.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
+		log.Info().Msgf("CASED_SERVER_API: %v", casedHTTPServer)
 	}
 	var issuer string
 	var metaDataURL string
@@ -221,19 +202,19 @@ func login(cmd *cobra.Command, args []string) {
 
 	token, err := AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/callback")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Msg(err.Error())
 	}
 
-	log.Println("Authentication successful")
-	log.Println("Fetching remote data...")
+	log.Info().Msg("Authentication successful")
+	log.Info().Msg("Fetching remote data...")
 
 	metaData, err := getMetaData(metaDataURL, token)
 	if err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch metadata: ", err)
+		log.Fatal().Msgf("[*] ERROR: Unable to fetch metadata: %v", err)
 	}
 
 	if err := fetchSnippets(casedHTTPServer, token); err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch snippets: ", err)
+		log.Fatal().Msgf("[*] ERROR: Unable to fetch snippets: %v", err)
 	}
 
 	if casedServer != "" {
@@ -334,7 +315,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) (string, 
 
 	// Exit if failed to exchange code for token.
 	if tokenExchangeError != nil {
-		log.Println("[ERROR]: ", tokenExchangeError)
+		log.Error().Err(tokenExchangeError).Msg("")
 		select {
 		case <-time.After(1 * time.Second):
 			stop(server)
@@ -406,11 +387,11 @@ func connect(host, token string) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	log.Println("Connecting to cased-server...")
+	log.Info().Msg("Connecting to cased-server...")
 
 	client, err := ssh.Dial("tcp", host, config)
 	if err != nil {
-		log.Fatal("Failed to dial: ", err)
+		log.Fatal().Msgf("Failed to dial: %v", err)
 	}
 	defer client.Close()
 
@@ -418,7 +399,7 @@ func connect(host, token string) {
 	// represented by a Session.
 	session, err := client.NewSession()
 	if err != nil {
-		log.Fatal("Failed to create session: ", err)
+		log.Fatal().Msgf("Failed to create session: %v", err)
 	}
 	defer session.Close()
 
@@ -446,11 +427,11 @@ func connect(host, token string) {
 	}
 
 	if err = session.RequestPty(term, h, w, modes); err != nil {
-		log.Fatal("Request for pseudo terminal failed: ", err)
+		log.Fatal().Msgf("Request for pseudo terminal failed: %v", err)
 	}
 
 	if err = current.SetRaw(); err != nil {
-		log.Fatal("Unable to set terminal mode to raw:", err)
+		log.Fatal().Msgf("Unable to set terminal mode to raw: %v", err)
 	}
 
 	var stdin io.WriteCloser
@@ -458,17 +439,17 @@ func connect(host, token string) {
 
 	stdin, err = session.StdinPipe()
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal().Err(err).Msg("Creating stdin pipe")
 	}
 
 	stdout, err = session.StdoutPipe()
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal().Err(err).Msg("Creating stdout pipe")
 	}
 
 	stderr, err = session.StderrPipe()
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal().Err(err).Msg("Creating stderr pipe")
 	}
 
 	if testMode {
@@ -485,11 +466,11 @@ func connect(host, token string) {
 		for {
 			n, err := scanner.Read(data)
 			if err != nil {
-				msg := ""
+				msg := "SSH Session ended"
 				if err != io.EOF {
-					msg = ": " + err.Error()
+					msg += ": " + err.Error()
 				}
-				log.Println("SSH Session ended", msg)
+				log.Info().Msg(msg)
 				current.Reset()
 				os.Exit(0)
 			}
@@ -505,7 +486,11 @@ func connect(host, token string) {
 				hsBuffer = disconnectedHandshake
 			}
 
-			// debug(fmt.Sprintf("ssh (raw): len=%d, %v", n, string(data[:n])))
+			fileLogger.Debug().
+				Int("len", n).
+				Str("raw data", string(data[:n])).
+				Msg("ssh read")
+
 			// look for handshake (connected to or disconnected from target prompt)
 			for i, b := range data[:n] {
 				if b == hsBuffer[hsPtr] {
@@ -530,11 +515,7 @@ func connect(host, token string) {
 					hsPtr = 0
 				}
 			}
-			// filtered := bytes.Replace(data[:n], []byte("\x1b[?2004l"), []byte{}, -1)
-			// filtered = bytes.Replace(filtered, []byte("\x1b[?2004h"), []byte{}, -1)
-			// filtered = bytes.Replace(filtered, []byte("]0;"), []byte{}, -1)
-			// debug(fmt.Sprintf("STDOUT (b): [%v]", filtered))
-			// debug(fmt.Sprintf("STDOUT (s): [%v]", string(filtered)))
+
 			os.Stdout.Write(data[:n])
 		}
 	}()
@@ -613,12 +594,12 @@ func openbrowser(url string) bool {
 	case "darwin":
 		browserCmd = exec.Command("open", url)
 	default:
-		log.Println("Unknow OS platform")
+		log.Error().Msg("Unknow OS platform")
 		return false
 	}
 
 	if err := browserCmd.Start(); err != nil {
-		log.Println("Unable to launch web browser: ", err)
+		log.Error().Err(err).Msg("Unable to launch web browser")
 		return false
 	}
 
