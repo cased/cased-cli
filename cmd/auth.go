@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cased/cased-cli/cased"
 	"github.com/cased/cased-cli/integration"
 	"github.com/containerd/console"
 	"github.com/google/uuid"
@@ -208,7 +209,7 @@ func login(cmd *cobra.Command, args []string) {
 	log.Info().Msg("Authentication successful")
 	log.Info().Msg("Fetching remote data...")
 
-	metaData, err := getMetaData(metaDataURL, token)
+	metaData, err := cased.GetMetaData(metaDataURL, token)
 	if err != nil {
 		log.Fatal().Msgf("[*] ERROR: Unable to fetch metadata: %v", err)
 	}

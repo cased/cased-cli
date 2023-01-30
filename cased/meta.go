@@ -1,19 +1,17 @@
-package cmd
+package cased
 
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/cased/cased-cli/cased"
 )
 
-// getMetaData fetches metadata information from a cased-shell instance.
+// GetMetaData fetches metadata information from a cased-shell instance.
 // Information includes cased-server's hostname/IP and any other relevant data
 // required by cased-cli to work properly.
-func getMetaData(server, token string) (map[string]string, error) {
+func GetMetaData(server, token string) (map[string]string, error) {
 	const endpoint = "/api/meta"
 
-	metaData, err := cased.Get(server, endpoint, token)
+	metaData, err := Get(server, endpoint, token)
 	if err != nil {
 		return nil, err
 	}
