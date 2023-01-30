@@ -50,11 +50,28 @@ const (
 )
 
 var (
-	stateUUID uuid.UUID
+	stateUUID       uuid.UUID
+	casedServer     string
+	casedHTTPServer string
 )
+
+// promptsCmd represents the prompts command
+var authCmd = &cobra.Command{
+	Use:     "auth instance.domain",
+	Short:   "Authenticate cased-cli with the IDP",
+	Long:    `Authenticate cased-cli with the IDP `,
+	Example: "cased-cli auth instance.domain",
+	// auth requires exactly one positional argument, a cased-shell instance hostname
+	Args: cobra.ExactArgs(1),
+	Run:  login,
+}
 
 func init() {
 	stateUUID = uuid.New()
+
+	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
+	casedServer = os.Getenv("CASED_SERVER")
+	casedHTTPServer = os.Getenv("CASED_SERVER_API")
 
 	rootCmd.AddCommand(authCmd)
 }
@@ -152,26 +169,6 @@ func (r *stdinReader) Read(p []byte) (n int, err error) {
 	}
 
 	return copy(p, b), nil
-}
-
-// promptsCmd represents the prompts command
-var authCmd = &cobra.Command{
-	Use:     "auth instance.domain",
-	Short:   "Authenticate cased-cli with the IDP",
-	Long:    `Authenticate cased-cli with the IDP `,
-	Example: "cased-cli auth instance.domain",
-	// auth requires exactly one positional argument, a cased-shell instance hostname
-	Args: cobra.ExactArgs(1),
-	Run:  login,
-}
-
-var casedServer string
-var casedHTTPServer string
-
-func init() {
-	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
-	casedServer = os.Getenv("CASED_SERVER")
-	casedHTTPServer = os.Getenv("CASED_SERVER_API")
 }
 
 func login(cmd *cobra.Command, args []string) {
