@@ -16,6 +16,10 @@ func Get(server, endpoint, token string) ([]byte, error) {
 	if !strings.HasSuffix(server, "/") {
 		server += "/"
 	}
+	// remove all '/' chars from endpoint, we ensure "server" ends with '/' in above code.
+	for strings.HasPrefix(endpoint, "/") {
+		endpoint = endpoint[1:]
+	}
 	apiURL := fmt.Sprintf("%s%s", server, endpoint)
 
 	if os.Getenv("TLS_SKIP_VERIFY") == "true" {
