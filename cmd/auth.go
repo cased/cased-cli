@@ -120,7 +120,7 @@ func login(cmd *cobra.Command, args []string) {
 	}
 
 	if err := fetchSnippets(casedHTTPServer, token); err != nil {
-		log.Fatal().Msgf("Unable to fetch snippets: %v", err)
+		log.Warn().Msgf("Unable to fetch snippets: %v", err)
 	}
 
 	if casedServer != "" {

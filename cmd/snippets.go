@@ -171,7 +171,7 @@ const demoSnippetsData = `
 }
 `
 
-var fetchedSnippets *snippets = &snippets{}
+var fetchedSnippets *snippets
 
 var selectedSnippet string
 
@@ -656,6 +656,7 @@ func (m *model) back() {
 // at server.
 func fetchSnippets(server, token string) error {
 	const endpoint = "/snippets"
+	tmpSnippets := &snippets{}
 
 	body, err := cased.Get(server, endpoint, token)
 	if err != nil {
@@ -664,10 +665,11 @@ func fetchSnippets(server, token string) error {
 
 	// Check if we got valid snippets in the response.
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, fetchedSnippets); err != nil {
+		if err := json.Unmarshal(body, tmpSnippets); err != nil {
 			// Set fetchedSnippets to nil so we know there are no snippets available.
-			fetchedSnippets = nil
 			log.Printf("[*] WARNING: Invalid snippets response: %v", err)
+		} else {
+			fetchedSnippets = tmpSnippets
 		}
 	}
 
