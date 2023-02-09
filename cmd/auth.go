@@ -368,10 +368,18 @@ func connect(host, token string) {
 		testTimer = time.NewTimer(2 * time.Second)
 	}
 
-	go sshReadStdout(stdout)
+	var connected atomic.Bool
+	connected.Store(true)
+
+	go func() {
+		sshReadStdout(stdout)
+		connected.Store(false)
+	}()
+
 	go sshReadStderr(stderr)
+
 	session.Shell()
-	go sshSendInput(stdin)
+	readInputLoop(stdin, &connected)
 }
 
 // sshReadStdout reads remote stdout stream (output from commands executed remotely).
@@ -464,8 +472,8 @@ func sshReadStderr(stderr io.Reader) {
 	}
 }
 
-// sshSendInput keeps processing user input and send it over to the remote ssh stdin stream.
-func sshSendInput(stdin io.WriteCloser) {
+// readInputLoop keeps processing user input and send it over to the remote ssh stdin stream.
+func readInputLoop(stdin io.WriteCloser, connected *atomic.Bool) {
 	var snippetsTimer *time.Timer
 	snippetsTimerIsOn := false
 
@@ -473,7 +481,7 @@ func sshSendInput(stdin io.WriteCloser) {
 	// Read input from cased-cli (either cased-cli or bubbletea may be reading from stdin)
 	go sharedStdinReader.ReadLoop()
 
-	for {
+	for connected.Load() {
 		if snippetsTimerIsOn {
 			select {
 			case <-snippetsTimer.C:
@@ -505,7 +513,7 @@ func sshSendInput(stdin io.WriteCloser) {
 		} else {
 			select {
 			case data, ok := <-sharedStdinReader.Ch:
-				if !ok {
+				if !ok || !connected.Load() {
 					return
 				}
 				if data[0] == '/' &&
@@ -517,6 +525,10 @@ func sshSendInput(stdin io.WriteCloser) {
 					snippetsTimer = time.NewTimer(snippetsTriggerTime)
 				} else {
 					stdin.Write(data)
+				}
+			case <-time.After(1 * time.Second):
+				if !connected.Load() {
+					return
 				}
 			}
 		}
