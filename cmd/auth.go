@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,133 +33,28 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cased/cased-cli/cased"
+	"github.com/cased/cased-cli/integration"
+	"github.com/cased/cased-cli/iowrapper"
 	"github.com/containerd/console"
 	"github.com/google/uuid"
 	"github.com/matthewhartstonge/pkce"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 )
 
-var browserCmd *exec.Cmd
-var token string
-
+// cased-cli constant settings
 const (
 	snippetsTriggerTime = 500 * time.Millisecond
-	clientID            = "cased-cli"
+	clientID            = "cased-cli" // OAUTH/dex "client_id"
 )
-
-type stdinReader struct {
-	detached  atomic.Bool
-	stdinChan chan []byte
-	reader    *bufio.Reader
-	lastInput []byte
-}
-
-// TestPrompt and TestAuth represent data loaded from integration test script.
-type TestPrompt struct {
-	Name     string // prompt name
-	Matches  string
-	Commands []struct {
-		Cmd      string // command to execute
-		Expected string // expected output
-	}
-}
-type TestAuth struct {
-	Prompts []TestPrompt
-}
-
-// TestAuthData stores integration test script data for testing the auth command.
-var TestAuthData TestAuth
-
-func (r *stdinReader) detach() {
-	r.detached.Store(true)
-	select {
-	case <-r.stdinChan:
-		r.reader.UnreadByte()
-	default:
-		return
-	}
-}
-
-func (r *stdinReader) attach() {
-	// Send last input read from bubbletea back to our app
-	r.detached.Store(false)
-	r.stdinChan <- r.lastInput
-	r.lastInput = nil
-}
-
-func (r *stdinReader) isDetached() bool {
-	return r.detached.Load()
-}
-
-var sharedStdinReader stdinReader = stdinReader{
-	reader:    bufio.NewReader(os.Stdin),
-	stdinChan: make(chan []byte),
-}
-
-func (r *stdinReader) readLoop() {
-	var buffer [32]byte
-	for {
-		n, err := r.reader.Read(buffer[:])
-		if err != nil {
-			close(r.stdinChan)
-			return
-		}
-		// Keep last input read from bubbletea app
-		// When we close the bubbletea app (snippets), send the last
-		// input back to our app so we don't lose it.
-		if r.detached.Load() {
-			r.lastInput = make([]byte, n)
-			copy(r.lastInput, buffer[:n])
-		}
-		// debug(fmt.Sprintf("read: got %d bytes. is_detached=%v", n, r.detached.Load()))
-		r.stdinChan <- buffer[:n]
-	}
-}
-
-func (r *stdinReader) Read(p []byte) (n int, err error) {
-	b, ok := <-r.stdinChan
-
-	if !ok {
-		return 0, errors.New("stdin channel is closed")
-	}
-
-	copy(p, b)
-
-	return len(b), nil
-}
-
-const debugFileName = "ssh.log"
 
 var (
-	debugFile    *os.File
-	debugWritter *bufio.Writer
-	debug        func(string)
-	stateUUID    uuid.UUID
+	stateUUID       uuid.UUID
+	casedServer     string
+	casedHTTPServer string
 )
-
-func debugImpl(msg string) {
-	debugWritter.WriteString(msg + "\n")
-	debugWritter.Flush()
-}
-
-func debugNull(msg string) {}
-
-func init() {
-	debug = debugNull
-
-	if len(os.Getenv("DEBUG")) > 0 {
-		var err error
-		debugFile, err = os.OpenFile(debugFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0744)
-		if err == nil {
-			debugWritter = bufio.NewWriter(debugFile)
-			debug = debugImpl
-		}
-	}
-	stateUUID = uuid.New()
-
-	rootCmd.AddCommand(authCmd)
-}
 
 // promptsCmd represents the prompts command
 var authCmd = &cobra.Command{
@@ -173,31 +67,34 @@ var authCmd = &cobra.Command{
 	Run:  login,
 }
 
-var casedServer string
-var casedHTTPServer string
-
 func init() {
+	stateUUID = uuid.New()
+
 	// If CASED_SERVER is not set then cased-cli will get it during token exchange.
 	casedServer = os.Getenv("CASED_SERVER")
 	casedHTTPServer = os.Getenv("CASED_SERVER_API")
+
+	rootCmd.AddCommand(authCmd)
 }
 
 func login(cmd *cobra.Command, args []string) {
 	casedShell := args[0]
 	if casedShell == "" {
-		fmt.Fprintf(os.Stderr, "[*] ERROR: cased-shell hostname must be a non-empty string.\n")
-		os.Exit(1)
+		log.Fatal().Msg("cased-shell hostname must be a non-empty string")
 	}
 
-	if casedServer != "" {
-		log.Printf("CASED_SERVER: %s\n", casedServer)
+	if casedServer == "" {
+		log.Info().Msg("CASED_SERVER: <autodetect from cased-shell metadata>")
+	} else {
+		log.Info().Msgf("CASED_SERVER: %s", casedServer)
 	}
 
 	if casedHTTPServer == "" {
 		casedHTTPServer = fmt.Sprintf("https://%s/cased-server", casedShell)
-	} else {
-		log.Printf("CASED_SERVER_API: %v\n", casedHTTPServer)
 	}
+
+	log.Info().Msgf("CASED_SERVER_API: %v", casedHTTPServer)
+
 	var issuer string
 	var metaDataURL string
 
@@ -209,18 +106,21 @@ func login(cmd *cobra.Command, args []string) {
 		metaDataURL = fmt.Sprintf("https://%s", casedShell)
 	}
 
-	AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/callback")
-
-	log.Println("Authentication successful")
-	log.Println("Fetching remote data...")
-
-	metaData, err := getMetaData(metaDataURL, token)
+	token, err := AuthorizeUser("cased-cli", issuer, "http://127.0.0.1:9993/callback")
 	if err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch metadata: ", err)
+		log.Fatal().Msg(err.Error())
+	}
+
+	log.Info().Msg("Authentication successful")
+	log.Info().Msg("Fetching remote data...")
+
+	metaData, err := cased.GetMetaData(metaDataURL, token)
+	if err != nil {
+		log.Fatal().Msgf("Unable to fetch metadata: %v", err)
 	}
 
 	if err := fetchSnippets(casedHTTPServer, token); err != nil {
-		log.Fatalln("[*] ERROR: Unable to fetch snippets: ", err)
+		log.Warn().Msgf("Unable to fetch snippets: %v", err)
 	}
 
 	if casedServer != "" {
@@ -231,20 +131,26 @@ func login(cmd *cobra.Command, args []string) {
 }
 
 // AuthorizeUser implements the PKCE OAuth2 flow.
-func AuthorizeUser(clientID string, issuer string, redirectURL string) {
+// If authentication succeeds, the token is return to the caller as string.
+func AuthorizeUser(clientID string, issuer string, redirectURL string) (string, error) {
+	var token string
+
 	// Generate a secure code verifier!
 	codeVerifier, err := pkce.GenerateCodeVerifier(96)
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to generate code verifier: %v\n", err)
+		return "", fmt.Errorf("Unable to generate code verifier: %v", err)
 	}
 
 	codeChallenge, err := pkce.GenerateCodeChallenge(pkce.S256, codeVerifier)
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to generate code challenge: %v\n", err)
+		return "", fmt.Errorf("Unable to generate code challenge: %v", err)
 	}
 
 	// setup a request to the auth endpoint
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/auth", issuer), nil)
+	if err != nil {
+		return "", err
+	}
 
 	loginArgs := url.Values{}
 	loginArgs.Add("audience", issuer)
@@ -292,14 +198,14 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 	// extract the port number from the redirectURL
 	u, err := url.Parse(redirectURL)
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to parse redirect URL: %v\n", err)
+		return "", fmt.Errorf("Unable to parse redirect URL: %v", err)
 	}
 	port := u.Port()
 
 	// listen on that port
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
 	if err != nil {
-		log.Fatalf("[*] ERROR: Unable to listen on port %s: %v\n", port, err)
+		return "", fmt.Errorf("Unable to listen on port %s: %v", port, err)
 	}
 
 	// start the server in a separate goroutine
@@ -315,7 +221,7 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 
 	// Exit if failed to exchange code for token.
 	if tokenExchangeError != nil {
-		log.Println("[ERROR]: ", tokenExchangeError)
+		log.Error().Err(tokenExchangeError).Msg("")
 		select {
 		case <-time.After(1 * time.Second):
 			stop(server)
@@ -331,6 +237,8 @@ func AuthorizeUser(clientID string, issuer string, redirectURL string) {
 			stop(server)
 		}
 	}()
+
+	return token, nil
 }
 
 func sendResponse(w http.ResponseWriter, message string) {
@@ -347,7 +255,7 @@ func stop(server *http.Server) {
 }
 
 // exchangeCodeForToken trades the authorization code for an access token
-func exchangeCodeForToken(issuer string, clientID string, codeVerifier string, authorizationCode string, redirectURL string) (string, error) {
+func exchangeCodeForToken(issuer, clientID, codeVerifier, authorizationCode, redirectURL string) (string, error) {
 	// build the request body
 	body := url.Values{}
 	body.Add("grant_type", "authorization_code")
@@ -372,11 +280,17 @@ func exchangeCodeForToken(issuer string, clientID string, codeVerifier string, a
 	return data["access_token"].(string), nil
 }
 
-func connect(host, token string) {
-	var connectedToPrompt atomic.Bool
-	var testTimer *time.Timer
-	var testTimerExpired atomic.Bool
+var (
+	// Set when connected to a target prompt from which cased-server work as a bridge:
+	// cased-cli <--> cased-server <--> cased-shell <--> target-prompt.
+	// We have a simple handshake between cased-cli and cased-server to detect that
+	// cased-cli has succesfully connected to a prompt.
+	connectedToPrompt atomic.Bool
+	testTimer         *time.Timer
+	testTimerExpired  atomic.Bool
+)
 
+func connect(host, token string) {
 	config := &ssh.ClientConfig{
 		User: "cased",
 		Auth: []ssh.AuthMethod{
@@ -385,11 +299,11 @@ func connect(host, token string) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	log.Println("Connecting to cased-server...")
+	log.Info().Msg("Connecting to cased-server...")
 
 	client, err := ssh.Dial("tcp", host, config)
 	if err != nil {
-		log.Fatal("Failed to dial: ", err)
+		log.Fatal().Msgf("Failed to dial: %v", err)
 	}
 	defer client.Close()
 
@@ -397,7 +311,7 @@ func connect(host, token string) {
 	// represented by a Session.
 	session, err := client.NewSession()
 	if err != nil {
-		log.Fatal("Failed to create session: ", err)
+		log.Fatal().Msgf("Failed to create session: %v", err)
 	}
 	defer session.Close()
 
@@ -419,17 +333,17 @@ func connect(host, token string) {
 	w := 40
 	h := 80
 
-	if ws, err := current.Size(); err == nil {
+	if ws, werr := current.Size(); werr == nil {
 		w = int(ws.Width)
 		h = int(ws.Height)
 	}
 
-	if err := session.RequestPty(term, h, w, modes); err != nil {
-		log.Fatal("Request for pseudo terminal failed: ", err)
+	if err = session.RequestPty(term, h, w, modes); err != nil {
+		log.Fatal().Msgf("Request for pseudo terminal failed: %v", err)
 	}
 
-	if err := current.SetRaw(); err != nil {
-		log.Fatal("Unable to set terminal mode to raw:", err)
+	if err = current.SetRaw(); err != nil {
+		log.Fatal().Msgf("Unable to set terminal mode to raw: %v", err)
 	}
 
 	var stdin io.WriteCloser
@@ -437,120 +351,155 @@ func connect(host, token string) {
 
 	stdin, err = session.StdinPipe()
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal().Err(err).Msg("Creating stdin pipe")
 	}
 
 	stdout, err = session.StdoutPipe()
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal().Err(err).Msg("Creating stdout pipe")
 	}
 
 	stderr, err = session.StderrPipe()
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatal().Err(err).Msg("Creating stderr pipe")
 	}
 
 	if testMode {
 		testTimer = time.NewTimer(2 * time.Second)
 	}
 
+	var connected atomic.Bool
+	connected.Store(true)
+
 	go func() {
-		handshake := []byte{0xde, 0xad, 0xbe, 0xef}
-		disconnectedHandshake := []byte{0xef, 0xbe, 0xad, 0xde}
-		scanner := bufio.NewReader(stdout)
-		data := make([]byte, 1024)
-		hsPtr := 0 // handshake pointer to the current expected byte
-
-		for {
-			n, err := scanner.Read(data)
-			if err != nil {
-				msg := ""
-				if err != io.EOF {
-					msg = ": " + err.Error()
-				}
-				log.Println("SSH Session ended", msg)
-				current.Reset()
-				os.Exit(0)
-			}
-
-			if testMode && !testTimerExpired.Load() {
-				testTimer.Reset(2 * time.Second)
-			}
-
-			var hsBuffer []byte
-			if !connectedToPrompt.Load() {
-				hsBuffer = handshake
-			} else {
-				hsBuffer = disconnectedHandshake
-			}
-
-			// debug(fmt.Sprintf("ssh (raw): len=%d, %v", n, string(data[:n])))
-			// look for handshake (connected to or disconnected from target prompt)
-			for i, b := range data[:n] {
-				if b == hsBuffer[hsPtr] {
-					hsPtr++
-					if hsPtr == len(hsBuffer) {
-						// Handshake found.
-						// Send received data to the terminal but filter the handshake itself.
-						if (i + 1) == hsPtr {
-							// handshake found right in the start of the packet, i.e. data[:hsPtr] == handshake
-							os.Stdout.Write(data[hsPtr:])
-						} else {
-							// handshake found after the start of the packet
-							os.Stdout.Write(data[:(i-hsPtr)+1]) // write first bytes before the handshake
-							os.Stdout.Write(data[i+1:])         // write remaining bytes
-						}
-						hsPtr = 0
-						connectedToPrompt.Store(!connectedToPrompt.Load())
-						continue
-					}
-				} else if hsPtr > 0 {
-					// Reset handshake pointer, mismatched data
-					hsPtr = 0
-				}
-			}
-			// filtered := bytes.Replace(data[:n], []byte("\x1b[?2004l"), []byte{}, -1)
-			// filtered = bytes.Replace(filtered, []byte("\x1b[?2004h"), []byte{}, -1)
-			// filtered = bytes.Replace(filtered, []byte("]0;"), []byte{}, -1)
-			// debug(fmt.Sprintf("STDOUT (b): [%v]", filtered))
-			// debug(fmt.Sprintf("STDOUT (s): [%v]", string(filtered)))
-			os.Stdout.Write(data[:n])
-		}
+		sshReadStdout(stdout)
+		connected.Store(false)
 	}()
 
-	// remote stderr reader
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-
-		for scanner.Scan() {
-			fmt.Fprint(os.Stderr, scanner.Text())
-		}
-	}()
+	go sshReadStderr(stderr)
 
 	session.Shell()
+	readInputLoop(stdin, &connected)
+}
 
-	var timer *time.Timer
-	timerIsOn := false
-
-	go sharedStdinReader.readLoop()
+// sshReadStdout reads remote stdout stream (output from commands executed remotely).
+func sshReadStdout(stdout io.Reader) {
+	scanner := bufio.NewReader(stdout)
+	data := make([]byte, 1024)
 
 	for {
-		if timerIsOn {
+		n, err := scanner.Read(data)
+		if err != nil {
+			msg := "SSH Session ended"
+			if err != io.EOF {
+				msg += ": " + err.Error()
+			}
+			log.Info().Msg(msg)
+			return
+		}
+
+		// we got some data, update test timer if running integration tests (cased-cli test auth ...)
+		// when this timer expires we're good to start sending test commands, as the remote
+		// finished sending the initial ssh banner.
+		if testMode && !testTimerExpired.Load() {
+			testTimer.Reset(2 * time.Second)
+		}
+
+		fileLogger.Debug().
+			Int("len", n).
+			Str("raw data", string(data[:n])).
+			Msg("ssh read")
+
+		// look for handshake (connected to or disconnected from target prompt)
+		if processHandshake(data[:n]) {
+			continue
+		}
+
+		os.Stdout.Write(data[:n])
+	}
+}
+
+func processHandshake(data []byte) bool {
+	// cased-server sends this stream of bytes when user connects to a prompt.
+	handshake := []byte{0xde, 0xad, 0xbe, 0xef}
+	// cased-server sends this stream of bytes when user disconnects from a prompt.
+	disconnectedHandshake := []byte{0xef, 0xbe, 0xad, 0xde}
+
+	var hsBuffer []byte
+	hsPtr := 0 // handshake pointer to the current expected byte
+
+	if !connectedToPrompt.Load() {
+		// not connected to a prompt yet, look for connected handshake bytes.
+		hsBuffer = handshake
+	} else {
+		// cased-cli is connected to a prompt, look for a prompt-disconnected handshake.
+		hsBuffer = disconnectedHandshake
+	}
+
+	// look for handshake (connected to or disconnected from target prompt)
+	for i, b := range data {
+		if b == hsBuffer[hsPtr] {
+			hsPtr++
+			if hsPtr == len(hsBuffer) {
+				// Handshake found.
+				// Send received data to the terminal but filter the handshake itself.
+				if (i + 1) == hsPtr {
+					// handshake found right in the start of the packet, i.e. data[:hsPtr] == handshake
+					os.Stdout.Write(data[hsPtr:])
+				} else {
+					// handshake found after the start of the packet
+					os.Stdout.Write(data[:(i-hsPtr)+1]) // write first bytes before the handshake
+					os.Stdout.Write(data[i+1:])         // write remaining bytes
+				}
+				connectedToPrompt.Store(!connectedToPrompt.Load())
+				return true
+			}
+		} else if hsPtr > 0 {
+			// Reset handshake pointer, mismatched data
+			hsPtr = 0
+		}
+	}
+
+	return false
+}
+
+// sshReadStderr reads remote stderr stream.
+func sshReadStderr(stderr io.Reader) {
+	scanner := bufio.NewScanner(stderr)
+
+	for scanner.Scan() {
+		fmt.Fprint(os.Stderr, scanner.Text())
+	}
+}
+
+// readInputLoop keeps processing user input and send it over to the remote ssh stdin stream.
+func readInputLoop(stdin io.WriteCloser, connected *atomic.Bool) {
+	var snippetsTimer *time.Timer
+	snippetsTimerIsOn := false
+
+	sharedStdinReader := iowrapper.New(os.Stdin)
+	// Read input from cased-cli (either cased-cli or bubbletea may be reading from stdin)
+	go sharedStdinReader.ReadLoop()
+
+	for connected.Load() {
+		if snippetsTimerIsOn {
 			select {
-			case <-timer.C:
-				sharedStdinReader.detach() // give control of stdin to bubbletea
-				timerIsOn = false
-				snippet := ShowSnippetsWithReader(&sharedStdinReader)
-				sharedStdinReader.attach()
+			case <-snippetsTimer.C:
+				sharedStdinReader.Detach() // give control of stdin to bubbletea
+				snippetsTimerIsOn = false
+				snippet := ShowSnippetsWithReader(sharedStdinReader)
+				sharedStdinReader.Attach()
 				if snippet != "" {
 					stdin.Write([]byte(snippet))
 				}
-			case data, ok := <-sharedStdinReader.stdinChan:
+			case data, ok := <-sharedStdinReader.Ch:
+				// User typed in some more input after pressing '/' and before
+				// the snippets timer is triggered.
 				if !ok {
 					return
 				}
-				timer.Stop()
-				timerIsOn = false
+				snippetsTimer.Stop()
+				snippetsTimerIsOn = false
 				stdin.Write([]byte("/"))
 				stdin.Write(data)
 			}
@@ -558,23 +507,28 @@ func connect(host, token string) {
 			select {
 			case <-testTimer.C:
 				testTimerExpired.Store(true)
-				integrationTest(stdin)
+				integration.RunTest(stdin)
 				return
 			}
 		} else {
 			select {
-			case data, ok := <-sharedStdinReader.stdinChan:
-				if !ok {
+			case data, ok := <-sharedStdinReader.Ch:
+				if !ok || !connected.Load() {
 					return
 				}
 				if data[0] == '/' &&
 					len(data) == 1 &&
-					len(remoteSnippetsData) > 0 &&
+					fetchedSnippets != nil &&
 					connectedToPrompt.Load() {
-					timerIsOn = true
-					timer = time.NewTimer(snippetsTriggerTime)
+					// Activate snippets timer
+					snippetsTimerIsOn = true
+					snippetsTimer = time.NewTimer(snippetsTriggerTime)
 				} else {
 					stdin.Write(data)
+				}
+			case <-time.After(1 * time.Second):
+				if !connected.Load() {
+					return
 				}
 			}
 		}
@@ -582,6 +536,8 @@ func connect(host, token string) {
 }
 
 func openbrowser(url string) bool {
+	var browserCmd *exec.Cmd
+
 	switch runtime.GOOS {
 	case "linux":
 		browserCmd = exec.Command("xdg-open", url)
@@ -590,54 +546,14 @@ func openbrowser(url string) bool {
 	case "darwin":
 		browserCmd = exec.Command("open", url)
 	default:
-		log.Println("Unknow OS platform")
+		log.Error().Msg("Unknow OS platform")
 		return false
 	}
 
 	if err := browserCmd.Start(); err != nil {
-		log.Println("Unable to launch web browser: ", err)
+		log.Error().Err(err).Msg("Unable to launch web browser")
 		return false
 	}
 
 	return true
-}
-
-func checkFields(data map[string]interface{}, fields ...string) error {
-	for _, field := range fields {
-		if _, ok := data[field]; !ok {
-			return fmt.Errorf(`Invalid response: %q is missing`, field)
-		}
-	}
-
-	return nil
-}
-
-// sendTestCommands connect to the prompts specified in the integration test script,
-// then send the commands and check for expected results.
-func integrationTest(session io.WriteCloser) {
-	sendBytes := func(data []byte) {
-		n, err := session.Write(data)
-		if n != len(data) || err != nil {
-			log.Fatal("SSH write failed: ", err)
-		}
-	}
-	for _, prompt := range TestAuthData.Prompts {
-		sendBytes([]byte("/")) // Triggers list search (for Prompt)
-		time.Sleep(2 * time.Second)
-		sendBytes([]byte(prompt.Name)) // Look for a prompt matching this name.
-		time.Sleep(2 * time.Second)
-		sendBytes([]byte("\n")) // select Prompt
-		time.Sleep(2 * time.Second)
-		sendBytes([]byte("\r\n")) // send selection over SSH
-		time.Sleep(5 * time.Second)
-
-		for _, command := range prompt.Commands { // Send commands to the prompt.
-			sendBytes([]byte(command.Cmd))
-			sendBytes([]byte("\r\n"))
-			time.Sleep(time.Second)
-		}
-		session.Write([]byte("exit\n"))
-		time.Sleep(time.Second)
-		log.Println("Integration test results: success")
-	}
 }
